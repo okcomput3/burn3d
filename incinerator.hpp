@@ -257,12 +257,27 @@ void main()
         bg = vec4(0.0);
     }
     
-    // ====== Charred edge - only inside unburned area ======
-    if (inside_unburned) {
-        float char_zone = smoothstep(0.0, 0.03, dist_from_burn) * smoothstep(0.06, 0.03, dist_from_burn);
-        vec3 char_color = vec3(0.1, 0.05, 0.0);
-        bg.rgb = mix(bg.rgb, char_color, char_zone * 0.7);
+
+// ====== Charred edge - only inside unburned area ======
+if (inside_unburned) {
+    float char_zone = smoothstep(0.0, 0.03, dist_from_burn) * smoothstep(0.06, 0.03, dist_from_burn);
+    vec3 char_color = vec3(0.1, 0.05, 0.0);
+    
+    // Char fades in AFTER fire is established (delayed by 0.1 progress)
+    // and fades out BEFORE fire disappears during reverse
+    float char_delay = 0.1;
+    float char_fade_duration = 0.15;
+    float char_progress_factor;
+    if (direction == 1) {
+        // Reverse: char fades out first (at higher progress values)
+        char_progress_factor = smoothstep(char_delay + char_fade_duration, char_delay, 1.0 - progress);
+    } else {
+        // Forward: char fades in after fire is established
+        char_progress_factor = smoothstep(char_delay, char_delay + char_fade_duration, progress);
     }
+    
+    bg.rgb = mix(bg.rgb, char_color, char_zone * 0.7 * char_progress_factor);
+}
 
 // ====== Blue fire zone - only inside unburned area ======
 if (inside_unburned) {
