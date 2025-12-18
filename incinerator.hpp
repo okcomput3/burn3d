@@ -264,22 +264,36 @@ void main()
         bg.rgb = mix(bg.rgb, char_color, char_zone * 0.7);
     }
 
-    // ====== Blue fire zone - only inside unburned area ======
-    if (inside_unburned) {
-        float blue_height = 0.13;
-        float blue_start = 0.02;
-        float blue_zone = smoothstep(blue_start, blue_start + 0.02, dist_from_burn) 
-                        * smoothstep(blue_start + blue_height, blue_start + blue_height * 0.5, dist_from_burn);
-        
-        float blue_flicker = 0.7 + 0.3 * sin(t * 12.0 + uvpos.x * 30.0) * sin(t * 8.0 + uvpos.x * 50.0);
-        float blue_noise = sin(uvpos.x * 60.0 + t * 3.0) * 0.3 + sin(uvpos.x * 120.0 - t * 5.0) * 0.2;
-        
-        blue_zone *= blue_flicker * (0.8 + blue_noise * 0.4);
-        blue_zone = clamp(blue_zone, 0.0, 1.0);
-        
-        vec3 blue_color = mix(vec3(0.0, 0.2, 0.8), vec3(0.3, 0.5, 1.0), smoothstep(blue_start, blue_start + blue_height * 0.7, dist_from_burn));
-        bg.rgb = mix(bg.rgb, blue_color, blue_zone * 0.85);
+// ====== Blue fire zone - only inside unburned area ======
+if (inside_unburned) {
+    float blue_height = 0.13;
+    float blue_start = 0.02;
+    float blue_zone = smoothstep(blue_start, blue_start + 0.02, dist_from_burn) 
+                    * smoothstep(blue_start + blue_height, blue_start + blue_height * 0.5, dist_from_burn);
+    
+    float blue_flicker = 0.7 + 0.3 * sin(t * 12.0 + uvpos.x * 30.0) * sin(t * 8.0 + uvpos.x * 50.0);
+    float blue_noise = sin(uvpos.x * 60.0 + t * 3.0) * 0.3 + sin(uvpos.x * 120.0 - t * 5.0) * 0.2;
+    
+    blue_zone *= blue_flicker * (0.8 + blue_noise * 0.4);
+    blue_zone = clamp(blue_zone, 0.0, 1.0);
+    
+    // Blue fades in AFTER fire is established (delayed by 0.15 progress)
+    // and fades out BEFORE fire disappears during reverse
+    float blue_delay = 0.15;
+    float blue_fade_duration = 0.2;
+    float blue_progress_factor;
+    if (direction == 1) {
+        // Reverse: blue fades out first (at higher progress values)
+        blue_progress_factor = smoothstep(blue_delay + blue_fade_duration, blue_delay, 1.0 - progress);
+    } else {
+        // Forward: blue fades in after fire is established
+        blue_progress_factor = smoothstep(blue_delay, blue_delay + blue_fade_duration, progress);
     }
+    blue_zone *= blue_progress_factor;
+    
+    vec3 blue_color = mix(vec3(0.0, 0.2, 0.8), vec3(0.3, 0.5, 1.0), smoothstep(blue_start, blue_start + blue_height * 0.7, dist_from_burn));
+    bg.rgb = mix(bg.rgb, blue_color, blue_zone * 0.85);
+}
 
     // Composite 3D fire
     vec4 result = vec4(fire_color_accum.rgb, 1.0) * a_3d + bg * (1.0 - a_3d);
