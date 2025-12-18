@@ -114,8 +114,26 @@ void main()
     float burn_progress = progress;
     if (direction == 1) burn_progress = 1.0 - burn_progress;
     
-    float dist_from_burn = uvpos.y - progress;
     float t = burn_progress * flame_speed * 10.0;
+    
+    // ============ WAVY BURN LINE ============
+    // Fade wave amplitude at start and end so burn completes fully
+    float wave_fade = smoothstep(0.0, 0.1, progress) * smoothstep(1.0, 0.85, progress);
+    
+    // Multiple wave frequencies for organic fire-creeping effect
+    float wave_offset = 0.0;
+    wave_offset += sin(uvpos.x * 12.0 + t * 0.4) * 0.025;           // Slow large waves
+    wave_offset += sin(uvpos.x * 25.0 - t * 0.7) * 0.015;           // Medium counter-waves
+    wave_offset += sin(uvpos.x * 45.0 + t * 1.2) * 0.008;           // Fast small ripples
+    wave_offset += sin(uvpos.x * 8.0 + t * 0.2) * 0.035;            // Very slow broad undulation
+    // Add pseudo-random variation per segment for irregular burn edge
+    wave_offset += (hash2(vec2(floor(uvpos.x * 15.0), floor(t * 0.3))) - 0.5) * 0.02;
+    
+    // Apply fade so waves diminish at start and end
+    wave_offset *= wave_fade;
+    
+    float effective_progress = progress + wave_offset;
+    float dist_from_burn = uvpos.y - effective_progress;
     
     vec4 fire_color_accum = vec4(0.0);
     float a_3d = 0.0;
@@ -172,7 +190,7 @@ void main()
     distort_uv = clamp(distort_uv, 0.0, 1.0);
     
     vec4 bg = get_pixel(distort_uv);
-    if (distort_uv.y < progress) bg = vec4(0.0);
+    if (distort_uv.y < effective_progress) bg = vec4(0.0);
     
     // ====== Charred edge ======
     float char_zone = smoothstep(0.0, 0.03, dist_from_burn) * smoothstep(0.06, 0.03, dist_from_burn);
@@ -215,7 +233,8 @@ void main()
     float ember_particle = 0.0;
     for (float i = 0.0; i < 5.0; i += 1.0) {
         float px = hash1(i + floor(t * 0.5)) * 0.9 + 0.05;
-        float py = progress + sin(t * (2.0 + i) + i * 3.14159) * 0.015 * burn_size;
+        float local_wave = (sin(px * 12.0 + t * 0.4) * 0.025 + sin(px * 25.0 - t * 0.7) * 0.015 + sin(px * 45.0 + t * 1.2) * 0.008 + sin(px * 8.0 + t * 0.2) * 0.035) * wave_fade;
+        float py = progress + local_wave + sin(t * (2.0 + i) + i * 3.14159) * 0.015 * burn_size;
         float spark_dist = length(vec2((uvpos.x - px) * width / height, uvpos.y - py));
         ember_particle += smoothstep(0.02 * burn_size, 0.0, spark_dist) * (0.5 + 0.5 * sin(t * 10.0 + i * 5.0));
     }
