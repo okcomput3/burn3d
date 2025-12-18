@@ -73,26 +73,48 @@ vec4 render_fire(vec2 I, vec3 iResolution, float t)
     float d = 0.0;
     vec4 O = vec4(0.0);
     
+    // Pre-compute values used in loop
+    float t_div_01 = t * 10.0; // t / 0.1
+    float cos_t = cos(t);
+    
     for (int iter = 0; iter < 32; iter++)
     {
         vec3 p = z * normalize(vec3(I + I, 0.0) - iResolution.xyy);
-        p.z += 5.0 + cos(t);
+        p.z += 5.0 + cos_t;
         
         float angle = p.y * 0.5;
-        mat2 m = mat2(cos(angle), cos(angle + 33.0), cos(angle + 11.0), cos(angle));
-        p.xz = m * p.xz / max(p.y * 0.1 + 1.0, 0.1);
+        // Pre-compute cos values
+        float c0 = cos(angle);
+        float c1 = cos(angle + 33.0);
+        float c2 = cos(angle + 11.0);
+        mat2 m = mat2(c0, c1, c2, c0);
         
-        for (d = 2.0; d < 15.0; d /= 0.6)
-        {
-            p += cos((p.yzx - vec3(t / 0.1, t, d)) * d) / d;
-        }
+        float inv_scale = 1.0 / max(p.y * 0.1 + 1.0, 0.1);
+        p.xz = m * p.xz * inv_scale;
         
-        d = 0.01 + abs(length(p.xz) + p.y * 0.3 - 0.5) / 7.0;
+        // Unroll the inner loop - same values as original: d starts at 2, divides by 0.6 each time
+        // d = 2.0, 3.333, 5.555, 9.259, 15.432 (stops when >= 15)
+        // So we have 4 iterations: 2.0, 3.333, 5.555, 9.259
+        vec3 time_vec = vec3(t_div_01, t, 0.0);
+        
+        time_vec.z = 2.0;
+        p += cos((p.yzx - time_vec) * 2.0) * 0.5;
+        
+        time_vec.z = 3.333333;
+        p += cos((p.yzx - time_vec) * 3.333333) * 0.3;
+        
+        time_vec.z = 5.555556;
+        p += cos((p.yzx - time_vec) * 5.555556) * 0.18;
+        
+        time_vec.z = 9.259259;
+        p += cos((p.yzx - time_vec) * 9.259259) * 0.108;
+        
+        d = 0.01 + abs(length(p.xz) + p.y * 0.3 - 0.5) * 0.142857; // 1/7 = 0.142857
         z += d;
         
-        if (d < 0.80) O += (sin(z / 3.0 + vec4(7.0, 2.0, 3.0, 0.0)) + 1.1) / d;
+        if (d < 0.80) O += (sin(z * 0.333333 + vec4(7.0, 2.0, 3.0, 0.0)) + 1.1) / d;
     }
-    return tanh_approx(O / 2000.0);
+    return tanh_approx(O * 0.0005); // 1/2000 = 0.0005
 }
 
 // Simple hash for burn line noise
@@ -114,11 +136,6 @@ void main()
 {
     float width = size.x;
     float height = size.y;
-    
- //   if (uvpos.x < 0.0 || uvpos.x > 1.0 || uvpos.y < 0.0 || uvpos.y > 1.0) {
- //       gl_FragColor = vec4(0.0);
- //       return;
- //   }
     
     float burn_progress = progress;
     if (direction == 1) burn_progress = 1.0 - burn_progress;
@@ -171,65 +188,122 @@ void main()
         vec3 iResolution = vec3(fire_width_scale, fire_res, fire_res);
         float spacing = fire_width_scale * 0.5;
         
-        float offsets[6];
-        offsets[0] = 0.0; offsets[1] = 1.5; offsets[2] = 3.0; 
-        offsets[3] = 4.5; offsets[4] = 4.5; offsets[5] = 4.5;
+        // Pre-compute offsets and shifts arrays as constants
+        // offsets: 0.0, 1.5, 3.0, 4.5, 4.5, 4.5
+        // shifts: 0.0, 0.25, 0.5, 0.75, 0.65, 0.35
         
-        float shifts[6];
-        shifts[0] = 0.0;  shifts[1] = 0.25; shifts[2] = 0.5;
-        shifts[3] = 0.75; shifts[4] = 0.65; shifts[5] = 0.35;
+        // Pre-compute common bounds checks
+        bool in_horizontal_bounds = uvpos.x >= effective_left && uvpos.x <= effective_right;
+        bool in_vertical_bounds = uvpos.y >= effective_bottom && uvpos.y <= effective_top;
+        
+        // Pre-compute loop bounds
+        float loop_start = -spacing * 2.0;
+        float loop_end_w = width + spacing * 2.0;
+        float loop_end_h = height + spacing * 2.0;
 
-        // Fire from bottom edge - only if this pixel is within horizontal bounds
-        if (dist_from_bottom >= -0.05 && dist_from_bottom <= 0.3 && 
-            uvpos.x >= effective_left && uvpos.x <= effective_right) {
+        // Fire from bottom edge
+        if (dist_from_bottom >= -0.05 && dist_from_bottom <= 0.3 && in_horizontal_bounds) {
             float fireY = (dist_from_bottom - 0.05) * height * fire_scale;
-            for(int i=0; i<6; i++) {
-                for (float off = -spacing * 2.0 + spacing * shifts[i]; off <= width + spacing * 2.0; off += spacing) {
-                    float localX = uvpos.x * width - off - spacing * 0.5;
-                    if (abs(localX) < fire_width_scale * (i < 2 ? 1.0 : 1.5)) {
-                        fire_color_accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + offsets[i]) * 0.5;
+            float uvpos_x_width = uvpos.x * width;
+            
+            for(int i = 0; i < 6; i++) {
+                float offset_val = (i < 3) ? float(i) * 1.5 : 4.5;
+                float shift_val;
+                if (i == 0) shift_val = 0.0;
+                else if (i == 1) shift_val = 0.25;
+                else if (i == 2) shift_val = 0.5;
+                else if (i == 3) shift_val = 0.75;
+                else if (i == 4) shift_val = 0.65;
+                else shift_val = 0.35;
+                
+                float width_mult = (i < 2) ? 1.0 : 1.5;
+                float max_localX = fire_width_scale * width_mult;
+                
+                for (float off = loop_start + spacing * shift_val; off <= loop_end_w; off += spacing) {
+                    float localX = uvpos_x_width - off - spacing * 0.5;
+                    if (abs(localX) < max_localX) {
+                        fire_color_accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + offset_val) * 0.5;
                     }
                 }
             }
         }
         
-        // Fire from top edge - only if this pixel is within horizontal bounds
-        if (dist_from_top >= -0.05 && dist_from_top <= 0.3 && 
-            uvpos.x >= effective_left && uvpos.x <= effective_right) {
+        // Fire from top edge
+        if (dist_from_top >= -0.05 && dist_from_top <= 0.3 && in_horizontal_bounds) {
             float fireY = (dist_from_top - 0.05) * height * fire_scale;
-            for(int i=0; i<6; i++) {
-                for (float off = -spacing * 2.0 + spacing * shifts[i]; off <= width + spacing * 2.0; off += spacing) {
-                    float localX = uvpos.x * width - off - spacing * 0.5;
-                    if (abs(localX) < fire_width_scale * (i < 2 ? 1.0 : 1.5)) {
-                        fire_color_accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + offsets[i] + 20.0) * 0.5;
+            float uvpos_x_width = uvpos.x * width;
+            
+            for(int i = 0; i < 6; i++) {
+                float offset_val = (i < 3) ? float(i) * 1.5 : 4.5;
+                float shift_val;
+                if (i == 0) shift_val = 0.0;
+                else if (i == 1) shift_val = 0.25;
+                else if (i == 2) shift_val = 0.5;
+                else if (i == 3) shift_val = 0.75;
+                else if (i == 4) shift_val = 0.65;
+                else shift_val = 0.35;
+                
+                float width_mult = (i < 2) ? 1.0 : 1.5;
+                float max_localX = fire_width_scale * width_mult;
+                
+                for (float off = loop_start + spacing * shift_val; off <= loop_end_w; off += spacing) {
+                    float localX = uvpos_x_width - off - spacing * 0.5;
+                    if (abs(localX) < max_localX) {
+                        fire_color_accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + offset_val + 20.0) * 0.5;
                     }
                 }
             }
         }
         
-        // Fire from left edge - only if this pixel is within vertical bounds
-        if (dist_from_left >= -0.05 && dist_from_left <= 0.3 && 
-            uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
+        // Fire from left edge
+        if (dist_from_left >= -0.05 && dist_from_left <= 0.3 && in_vertical_bounds) {
             float fireY = (dist_from_left - 0.05) * width * fire_scale;
-            for(int i=0; i<6; i++) {
-                for (float off = -spacing * 2.0 + spacing * shifts[i]; off <= height + spacing * 2.0; off += spacing) {
-                    float localX = uvpos.y * height - off - spacing * 0.5;
-                    if (abs(localX) < fire_width_scale * (i < 2 ? 1.0 : 1.5)) {
-                        fire_color_accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + offsets[i] + 40.0) * 0.5;
+            float uvpos_y_height = uvpos.y * height;
+            
+            for(int i = 0; i < 6; i++) {
+                float offset_val = (i < 3) ? float(i) * 1.5 : 4.5;
+                float shift_val;
+                if (i == 0) shift_val = 0.0;
+                else if (i == 1) shift_val = 0.25;
+                else if (i == 2) shift_val = 0.5;
+                else if (i == 3) shift_val = 0.75;
+                else if (i == 4) shift_val = 0.65;
+                else shift_val = 0.35;
+                
+                float width_mult = (i < 2) ? 1.0 : 1.5;
+                float max_localX = fire_width_scale * width_mult;
+                
+                for (float off = loop_start + spacing * shift_val; off <= loop_end_h; off += spacing) {
+                    float localX = uvpos_y_height - off - spacing * 0.5;
+                    if (abs(localX) < max_localX) {
+                        fire_color_accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + offset_val + 40.0) * 0.5;
                     }
                 }
             }
         }
         
-        // Fire from right edge - only if this pixel is within vertical bounds
-        if (dist_from_right >= -0.05 && dist_from_right <= 0.3 && 
-            uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
+        // Fire from right edge
+        if (dist_from_right >= -0.05 && dist_from_right <= 0.3 && in_vertical_bounds) {
             float fireY = (dist_from_right - 0.05) * width * fire_scale;
-            for(int i=0; i<6; i++) {
-                for (float off = -spacing * 2.0 + spacing * shifts[i]; off <= height + spacing * 2.0; off += spacing) {
-                    float localX = uvpos.y * height - off - spacing * 0.5;
-                    if (abs(localX) < fire_width_scale * (i < 2 ? 1.0 : 1.5)) {
-                        fire_color_accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + offsets[i] + 60.0) * 0.5;
+            float uvpos_y_height = uvpos.y * height;
+            
+            for(int i = 0; i < 6; i++) {
+                float offset_val = (i < 3) ? float(i) * 1.5 : 4.5;
+                float shift_val;
+                if (i == 0) shift_val = 0.0;
+                else if (i == 1) shift_val = 0.25;
+                else if (i == 2) shift_val = 0.5;
+                else if (i == 3) shift_val = 0.75;
+                else if (i == 4) shift_val = 0.65;
+                else shift_val = 0.35;
+                
+                float width_mult = (i < 2) ? 1.0 : 1.5;
+                float max_localX = fire_width_scale * width_mult;
+                
+                for (float off = loop_start + spacing * shift_val; off <= loop_end_h; off += spacing) {
+                    float localX = uvpos_y_height - off - spacing * 0.5;
+                    if (abs(localX) < max_localX) {
+                        fire_color_accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + offset_val + 60.0) * 0.5;
                     }
                 }
             }
@@ -237,7 +311,7 @@ void main()
         
         fire_color_accum = clamp(fire_color_accum, 0.0, 1.0);
         
-        a_3d = (fire_color_accum.r + fire_color_accum.g + fire_color_accum.b) / 3.0;
+        a_3d = (fire_color_accum.r + fire_color_accum.g + fire_color_accum.b) * 0.333333;
         a_3d = smoothstep(0.45, 0.9, a_3d);
         a_3d *= clamp(progress * 10.0, 0.0, 1.0);
     }
@@ -258,91 +332,89 @@ void main()
     }
     
 
-// ====== Charred edge - only inside unburned area ======
-if (inside_unburned) {
-    float char_zone = smoothstep(0.0, 0.03, dist_from_burn) * smoothstep(0.06, 0.03, dist_from_burn);
-    vec3 char_color = vec3(0.1, 0.05, 0.0);
-    
-    // Char fades in AFTER fire is established (delayed by 0.1 progress)
-    // and fades out BEFORE fire disappears during reverse
-    float char_delay = 0.1;
-    float char_fade_duration = 0.15;
-    float char_progress_factor;
-    if (direction == 1) {
-        // Reverse: char fades out first (at higher progress values)
-        char_progress_factor = smoothstep(char_delay + char_fade_duration, char_delay, 1.0 - progress);
-    } else {
-        // Forward: char fades in after fire is established
-        char_progress_factor = smoothstep(char_delay, char_delay + char_fade_duration, progress);
+    // ====== Charred edge - only inside unburned area ======
+    if (inside_unburned) {
+        float char_zone = smoothstep(0.0, 0.03, dist_from_burn) * smoothstep(0.06, 0.03, dist_from_burn);
+        vec3 char_color = vec3(0.1, 0.05, 0.0);
+        
+        float char_delay = 0.1;
+        float char_fade_duration = 0.15;
+        float char_progress_factor;
+        if (direction == 1) {
+            char_progress_factor = smoothstep(char_delay + char_fade_duration, char_delay, 1.0 - progress);
+        } else {
+            char_progress_factor = smoothstep(char_delay, char_delay + char_fade_duration, progress);
+        }
+        
+        bg.rgb = mix(bg.rgb, char_color, char_zone * 0.7 * char_progress_factor);
     }
-    
-    bg.rgb = mix(bg.rgb, char_color, char_zone * 0.7 * char_progress_factor);
-}
 
-// ====== Blue fire zone - only inside unburned area ======
-if (inside_unburned) {
-    float blue_height = 0.13;
-    float blue_start = 0.02;
-    float blue_zone = smoothstep(blue_start, blue_start + 0.02, dist_from_burn) 
-                    * smoothstep(blue_start + blue_height, blue_start + blue_height * 0.5, dist_from_burn);
-    
-    float blue_flicker = 0.7 + 0.3 * sin(t * 12.0 + uvpos.x * 30.0) * sin(t * 8.0 + uvpos.x * 50.0);
-    float blue_noise = sin(uvpos.x * 60.0 + t * 3.0) * 0.3 + sin(uvpos.x * 120.0 - t * 5.0) * 0.2;
-    
-    blue_zone *= blue_flicker * (0.8 + blue_noise * 0.4);
-    blue_zone = clamp(blue_zone, 0.0, 1.0);
-    
-    // Blue fades in AFTER fire is established (delayed by 0.15 progress)
-    // and fades out BEFORE fire disappears during reverse
-    float blue_delay = 0.15;
-    float blue_fade_duration = 0.2;
-    float blue_progress_factor;
-    if (direction == 1) {
-        // Reverse: blue fades out first (at higher progress values)
-        blue_progress_factor = smoothstep(blue_delay + blue_fade_duration, blue_delay, 1.0 - progress);
-    } else {
-        // Forward: blue fades in after fire is established
-        blue_progress_factor = smoothstep(blue_delay, blue_delay + blue_fade_duration, progress);
+    // ====== Blue fire zone - only inside unburned area ======
+    if (inside_unburned) {
+        float blue_height = 0.13;
+        float blue_start = 0.02;
+        float blue_zone = smoothstep(blue_start, blue_start + 0.02, dist_from_burn) 
+                        * smoothstep(blue_start + blue_height, blue_start + blue_height * 0.5, dist_from_burn);
+        
+        float blue_flicker = 0.7 + 0.3 * sin(t * 12.0 + uvpos.x * 30.0) * sin(t * 8.0 + uvpos.x * 50.0);
+        float blue_noise = sin(uvpos.x * 60.0 + t * 3.0) * 0.3 + sin(uvpos.x * 120.0 - t * 5.0) * 0.2;
+        
+        blue_zone *= blue_flicker * (0.8 + blue_noise * 0.4);
+        blue_zone = clamp(blue_zone, 0.0, 1.0);
+        
+        float blue_delay = 0.15;
+        float blue_fade_duration = 0.2;
+        float blue_progress_factor;
+        if (direction == 1) {
+            blue_progress_factor = smoothstep(blue_delay + blue_fade_duration, blue_delay, 1.0 - progress);
+        } else {
+            blue_progress_factor = smoothstep(blue_delay, blue_delay + blue_fade_duration, progress);
+        }
+        blue_zone *= blue_progress_factor;
+        
+        vec3 blue_color = mix(vec3(0.0, 0.2, 0.8), vec3(0.3, 0.5, 1.0), smoothstep(blue_start, blue_start + blue_height * 0.7, dist_from_burn));
+        bg.rgb = mix(bg.rgb, blue_color, blue_zone * 0.85);
     }
-    blue_zone *= blue_progress_factor;
-    
-    vec3 blue_color = mix(vec3(0.0, 0.2, 0.8), vec3(0.3, 0.5, 1.0), smoothstep(blue_start, blue_start + blue_height * 0.7, dist_from_burn));
-    bg.rgb = mix(bg.rgb, blue_color, blue_zone * 0.85);
-}
 
     // Composite 3D fire
     vec4 result = vec4(fire_color_accum.rgb, 1.0) * a_3d + bg * (1.0 - a_3d);
     
     // ============ BURN LINE - ALL SIDES ============
-    // Only render burn lines on the boundary of the unburned area
     float burn_size = 4.0;
     
     vec3 burn_line_total = vec3(0.0);
     float burn_alpha_total = 0.0;
     
-    // Bottom edge burn line - only if within horizontal bounds of unburned area
+    // Pre-compute common values for burn lines
+    float progress_fade = clamp(progress * 10.0, 0.0, 1.0);
+    float width_scale = width * 0.5;
+    float height_scale = height * 0.5;
+    float inv_aspect = width / height;
+    
+    // Bottom edge burn line
     if (uvpos.x >= effective_left && uvpos.x <= effective_right) {
         float edge_dist = dist_from_bottom;
         float edge_pos = uvpos.x;
         
         float wave = sin(edge_pos * 40.0 + t * 2.0) * 0.003 
                    + sin(edge_pos * 80.0 - t * 3.0) * 0.002;
-        float edge_noise = hash2(vec2(floor(edge_pos * width * 0.5), floor(t * 2.0))) * 0.01;
+        float edge_noise = hash2(vec2(floor(edge_pos * width_scale), floor(t * 2.0))) * 0.01;
         float adjusted_dist = edge_dist + wave + edge_noise;
         
-        float ember_core = smoothstep(0.012 * burn_size, 0.0, abs(adjusted_dist)) 
+        float abs_adj = abs(adjusted_dist);
+        float ember_core = smoothstep(0.012 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.005 * burn_size, 0.005 * burn_size, adjusted_dist);
-        float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs(adjusted_dist)) 
+        float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.01 * burn_size, 0.01 * burn_size, adjusted_dist);
-        float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs(adjusted_dist)) 
+        float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.02 * burn_size, 0.02 * burn_size, adjusted_dist);
         
         float ember_particle = 0.0;
+        float horiz_range = effective_right - effective_left;
         for (float i = 0.0; i < 3.0; i += 1.0) {
-            float px = hash1(i + floor(t * 0.5)) * (effective_right - effective_left) + effective_left;
-            float local_wave = calc_wave_offset(px, t, wave_fade);
+            float px = hash1(i + floor(t * 0.5)) * horiz_range + effective_left;
             float py = effective_bottom + sin(t * (2.0 + i) + i * 3.14159) * 0.015 * burn_size;
-            float spark_dist = length(vec2((uvpos.x - px) * width / height, uvpos.y - py));
+            float spark_dist = length(vec2((uvpos.x - px) * inv_aspect, uvpos.y - py));
             ember_particle += smoothstep(0.02 * burn_size, 0.0, spark_dist) * (0.5 + 0.5 * sin(t * 10.0 + i * 5.0));
         }
         
@@ -352,34 +424,36 @@ if (inside_unburned) {
                        + vec3(1.0, 0.5, 0.0) * ember_particle;
         float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, ember_particle * 0.8));
         burn_alpha *= (0.9 + 0.2 * sin(t * 20.0 + edge_pos * 50.0) * sin(t * 17.0));
-        burn_alpha *= clamp(progress * 10.0, 0.0, 1.0);
+        burn_alpha *= progress_fade;
         
         burn_line_total += burn_line * burn_alpha;
         burn_alpha_total = max(burn_alpha_total, burn_alpha);
     }
     
-    // Top edge burn line - only if within horizontal bounds of unburned area
+    // Top edge burn line
     if (uvpos.x >= effective_left && uvpos.x <= effective_right) {
         float edge_dist = dist_from_top;
         float edge_pos = uvpos.x;
         
         float wave = sin(edge_pos * 40.0 + t * 2.0 + 5.0) * 0.003 
                    + sin(edge_pos * 80.0 - t * 3.0 + 7.0) * 0.002;
-        float edge_noise = hash2(vec2(floor(edge_pos * width * 0.5), floor(t * 2.0) + 1.0)) * 0.01;
+        float edge_noise = hash2(vec2(floor(edge_pos * width_scale), floor(t * 2.0) + 1.0)) * 0.01;
         float adjusted_dist = edge_dist + wave + edge_noise;
         
-        float ember_core = smoothstep(0.012 * burn_size, 0.0, abs(adjusted_dist)) 
+        float abs_adj = abs(adjusted_dist);
+        float ember_core = smoothstep(0.012 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.005 * burn_size, 0.005 * burn_size, adjusted_dist);
-        float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs(adjusted_dist)) 
+        float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.01 * burn_size, 0.01 * burn_size, adjusted_dist);
-        float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs(adjusted_dist)) 
+        float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.02 * burn_size, 0.02 * burn_size, adjusted_dist);
         
         float ember_particle = 0.0;
+        float horiz_range = effective_right - effective_left;
         for (float i = 0.0; i < 3.0; i += 1.0) {
-            float px = hash1(i + floor(t * 0.5) + 10.0) * (effective_right - effective_left) + effective_left;
+            float px = hash1(i + floor(t * 0.5) + 10.0) * horiz_range + effective_left;
             float py = effective_top + sin(t * (2.0 + i) + i * 3.14159 + 2.0) * 0.015 * burn_size;
-            float spark_dist = length(vec2((uvpos.x - px) * width / height, uvpos.y - py));
+            float spark_dist = length(vec2((uvpos.x - px) * inv_aspect, uvpos.y - py));
             ember_particle += smoothstep(0.02 * burn_size, 0.0, spark_dist) * (0.5 + 0.5 * sin(t * 10.0 + i * 5.0 + 1.0));
         }
         
@@ -389,34 +463,36 @@ if (inside_unburned) {
                        + vec3(1.0, 0.5, 0.0) * ember_particle;
         float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, ember_particle * 0.8));
         burn_alpha *= (0.9 + 0.2 * sin(t * 20.0 + edge_pos * 50.0 + 3.0) * sin(t * 17.0));
-        burn_alpha *= clamp(progress * 10.0, 0.0, 1.0);
+        burn_alpha *= progress_fade;
         
         burn_line_total += burn_line * burn_alpha;
         burn_alpha_total = max(burn_alpha_total, burn_alpha);
     }
     
-    // Left edge burn line - only if within vertical bounds of unburned area
+    // Left edge burn line
     if (uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
         float edge_dist = dist_from_left;
         float edge_pos = uvpos.y;
         
         float wave = sin(edge_pos * 40.0 + t * 2.0 + 10.0) * 0.003 
                    + sin(edge_pos * 80.0 - t * 3.0 + 14.0) * 0.002;
-        float edge_noise = hash2(vec2(floor(edge_pos * height * 0.5), floor(t * 2.0) + 2.0)) * 0.01;
+        float edge_noise = hash2(vec2(floor(edge_pos * height_scale), floor(t * 2.0) + 2.0)) * 0.01;
         float adjusted_dist = edge_dist + wave + edge_noise;
         
-        float ember_core = smoothstep(0.012 * burn_size, 0.0, abs(adjusted_dist)) 
+        float abs_adj = abs(adjusted_dist);
+        float ember_core = smoothstep(0.012 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.005 * burn_size, 0.005 * burn_size, adjusted_dist);
-        float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs(adjusted_dist)) 
+        float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.01 * burn_size, 0.01 * burn_size, adjusted_dist);
-        float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs(adjusted_dist)) 
+        float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.02 * burn_size, 0.02 * burn_size, adjusted_dist);
         
         float ember_particle = 0.0;
+        float vert_range = effective_top - effective_bottom;
         for (float i = 0.0; i < 3.0; i += 1.0) {
-            float py = hash1(i + floor(t * 0.5) + 20.0) * (effective_top - effective_bottom) + effective_bottom;
+            float py = hash1(i + floor(t * 0.5) + 20.0) * vert_range + effective_bottom;
             float px = effective_left + sin(t * (2.0 + i) + i * 3.14159 + 4.0) * 0.015 * burn_size;
-            float spark_dist = length(vec2((uvpos.x - px) * width / height, uvpos.y - py));
+            float spark_dist = length(vec2((uvpos.x - px) * inv_aspect, uvpos.y - py));
             ember_particle += smoothstep(0.02 * burn_size, 0.0, spark_dist) * (0.5 + 0.5 * sin(t * 10.0 + i * 5.0 + 2.0));
         }
         
@@ -426,34 +502,36 @@ if (inside_unburned) {
                        + vec3(1.0, 0.5, 0.0) * ember_particle;
         float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, ember_particle * 0.8));
         burn_alpha *= (0.9 + 0.2 * sin(t * 20.0 + edge_pos * 50.0 + 6.0) * sin(t * 17.0));
-        burn_alpha *= clamp(progress * 10.0, 0.0, 1.0);
+        burn_alpha *= progress_fade;
         
         burn_line_total += burn_line * burn_alpha;
         burn_alpha_total = max(burn_alpha_total, burn_alpha);
     }
     
-    // Right edge burn line - only if within vertical bounds of unburned area
+    // Right edge burn line
     if (uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
         float edge_dist = dist_from_right;
         float edge_pos = uvpos.y;
         
         float wave = sin(edge_pos * 40.0 + t * 2.0 + 15.0) * 0.003 
                    + sin(edge_pos * 80.0 - t * 3.0 + 21.0) * 0.002;
-        float edge_noise = hash2(vec2(floor(edge_pos * height * 0.5), floor(t * 2.0) + 3.0)) * 0.01;
+        float edge_noise = hash2(vec2(floor(edge_pos * height_scale), floor(t * 2.0) + 3.0)) * 0.01;
         float adjusted_dist = edge_dist + wave + edge_noise;
         
-        float ember_core = smoothstep(0.012 * burn_size, 0.0, abs(adjusted_dist)) 
+        float abs_adj = abs(adjusted_dist);
+        float ember_core = smoothstep(0.012 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.005 * burn_size, 0.005 * burn_size, adjusted_dist);
-        float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs(adjusted_dist)) 
+        float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.01 * burn_size, 0.01 * burn_size, adjusted_dist);
-        float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs(adjusted_dist)) 
+        float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs_adj) 
                          * smoothstep(-0.02 * burn_size, 0.02 * burn_size, adjusted_dist);
         
         float ember_particle = 0.0;
+        float vert_range = effective_top - effective_bottom;
         for (float i = 0.0; i < 3.0; i += 1.0) {
-            float py = hash1(i + floor(t * 0.5) + 30.0) * (effective_top - effective_bottom) + effective_bottom;
+            float py = hash1(i + floor(t * 0.5) + 30.0) * vert_range + effective_bottom;
             float px = effective_right + sin(t * (2.0 + i) + i * 3.14159 + 6.0) * 0.015 * burn_size;
-            float spark_dist = length(vec2((uvpos.x - px) * width / height, uvpos.y - py));
+            float spark_dist = length(vec2((uvpos.x - px) * inv_aspect, uvpos.y - py));
             ember_particle += smoothstep(0.02 * burn_size, 0.0, spark_dist) * (0.5 + 0.5 * sin(t * 10.0 + i * 5.0 + 3.0));
         }
         
@@ -463,7 +541,7 @@ if (inside_unburned) {
                        + vec3(1.0, 0.5, 0.0) * ember_particle;
         float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, ember_particle * 0.8));
         burn_alpha *= (0.9 + 0.2 * sin(t * 20.0 + edge_pos * 50.0 + 9.0) * sin(t * 17.0));
-        burn_alpha *= clamp(progress * 10.0, 0.0, 1.0);
+        burn_alpha *= progress_fade;
         
         burn_line_total += burn_line * burn_alpha;
         burn_alpha_total = max(burn_alpha_total, burn_alpha);
