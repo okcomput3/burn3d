@@ -2,6 +2,7 @@
  * The MIT License (MIT)
  *
  * Copyright (c) 2025 Scott Moreau <oreaus@gmail.com>
+ * Copyright (c) 2025 Andrew Pliatsikas <futurebytestore@gmail.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -64,52 +65,6 @@ uniform int flame_smooth_3;
 uniform int flame_smooth_4;
 uniform vec4 flame_color;
 
-// ============ 2D FIRE FUNCTIONS ============
-vec2 hash( vec2 p )
-{
-    p = vec2(dot(p,vec2(127.1,311.7)),
-             dot(p,vec2(269.5,183.3)));
-    return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
-}
-
-float noise( in vec2 p )
-{
-    const float K1 = 0.366025404;
-    const float K2 = 0.211324865;
-    vec2 i = floor( p + (p.x + p.y) * K1 );
-    vec2 a = p - i + (i.x + i.y) * K2;
-    vec2 o = (a.x > a.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-    vec2 b = a - o + K2;
-    vec2 c = a - 1.0 + 2.0 * K2;
-    vec3 h = max(0.5 - vec3(dot(a, a), dot(b, b), dot(c, c) ), 0.0);
-    vec3 n = h * h * h * h * vec3(dot(a, hash(i)), dot(b, hash(i + o)), dot(c, hash(i + 1.0)));
-    return dot(n, vec3(70.0));
-}
-
-float fbm(vec2 uv)
-{
-    float f;
-    mat2 m = mat2(1.7,  1.2, -1.2,  1.7);
-    f  = 0.5000 * noise( uv ); uv = m * uv;
-    if (flame_smooth_1 == 1)
-    {
-        f += 0.2500 * noise( uv ); uv = m * uv;
-    }
-    if (flame_smooth_2 == 1)
-    {
-        f += 0.1250 * noise( uv ); uv = m * uv;
-    }
-    if (flame_smooth_3 == 1)
-    {
-        f += 0.0625 * noise( uv ); uv = m * uv;
-    }
-    if (flame_smooth_4 == 1)
-    {
-        f += 0.0125 * noise( uv ); uv = m * uv;
-    }
-    return 0.5 + 0.3 * f;
-}
-
 // ============ 3D FIRE FUNCTIONS ============
 vec4 tanh_approx(vec4 x)
 {
@@ -146,16 +101,38 @@ vec4 render_fire(vec2 I, vec3 iResolution, float t)
         d = 0.01 + abs(length(p.xz) + p.y * 0.3 - 0.5) / 7.0;
         z += d;
         
-        O += (sin(z / 3.0 + vec4(7.0, 2.0, 3.0, 0.0)) + 1.1) / d;
+        // Only accumulate color when close to fire (small d = near fire surface)
+        if (d < 0.80)
+        {
+            O += (sin(z / 3.0 + vec4(7.0, 2.0, 3.0, 0.0)) + 1.1) / d;
+        }
     }
     
     return tanh_approx(O / 2000.0);
+}
+
+// Simple hash for burn line noise
+float hash1(float p)
+{
+    return fract(sin(p * 127.1) * 43758.5453123);
+}
+
+float hash2(vec2 p)
+{
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
 void main()
 {
     float width = size.x;
     float height = size.y;
+    
+    // Don't render outside UV bounds
+    if (uvpos.x < 0.0 || uvpos.x > 1.0 || uvpos.y < 0.0 || uvpos.y > 1.0)
+    {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
     
     float burn_progress = progress;
     if (direction == 1)
@@ -171,51 +148,32 @@ void main()
         wfrag = vec4(0.0);
     }
     
-    // ============ 2D FIRE ============
-    vec2 uv = vec2(uvpos.x * width * 0.02, (uvpos.y - progress) * height * 0.002);
-    vec2 q = vec2(uv.x, uv.y);
-    q.x *= (1.05 - flame_width) * 3.0;
-    q.y *= pow(0.4 / ((flame_height * 0.3) + 0.1), clamp(uvpos.y + 0.2 - progress, 0.1, 0.7) * 20.0);
+    // Start with background
+    vec4 result = wfrag;
     
-    float T3 = burn_progress * flame_speed;
-    q.x -= 0.2;
-    q.y -= 0.1;
-    float n = fbm(q - vec2(0, T3));
-    float c = 1.0 - 12.0 * pow(max(0., length(vec2(q.x * 0.0001, q.y) * vec2(1.8 + q.y * 1.5, 0.75) ) - n * max(0.0, q.y + 0.25)), 1.2);
-    float c1 = n * c * (1.5 - pow(1.25 * uv.y, 4.0));
-    c = clamp(c, 0.0, 1.0);
-    c1 = clamp(c1, 0.0, 1.0);
-    
-    float r = 1.0 / flame_color.r;
-    float g = 1.0 / flame_color.g;
-    float b = 1.0 / flame_color.b;
-    vec3 col_2d = vec3(1.5 * pow(c1, r), 1.5 * pow(c1, g), 1.5 * pow(c1, b));
-    float a_2d = clamp(c * (1.0 - pow(uvpos.y, 10.0)), 0.0, 1.0);
-    
-    a_2d *= clamp(progress * 10.0, 0.0, 1.0);
-    a_2d *= clamp(uvpos.x * (width / 30.0), 0.0, 1.0);
-    a_2d *= clamp((1.0 - uvpos.x) * (width / 30.0), 0.0, 1.0);
-    
-    // Composite 2D fire over background
-    vec4 result = vec4(col_2d * a_2d, a_2d) + wfrag * (1.0 - a_2d);
+    float t = burn_progress * flame_speed * 10.0;
     
     // ============ 3D FIRE ============
     if (dist_from_burn >= -0.02 && dist_from_burn <= 0.5)
     {
-        float t = burn_progress * flame_speed * 10.0;
         float fireY = (dist_from_burn - 0.05) * height * (0.2 + flame_height);
-        float fire_width = 100.0 * (0.5 + flame_width);
-        vec3 iResolution = vec3(fire_width, height * 0.15, height * 0.15);
+        
+        // Scale fire size relative to window, with minimum values
+        float fire_width = max(width * 0.12, 5.0) * (1.5 + flame_width);
+        float fire_res = max(height * 0.15, 40.0);
+        vec3 iResolution = vec3(fire_width, fire_res, fire_res);
         
         vec4 O = vec4(0.0);
-        float spacing = fire_width * 0.7;
+        
+        // Tighter spacing for small windows
+        float spacing = fire_width * 0.5;
         
         // First layer of flames
         for (float offset = -spacing * 2.0; offset <= width + spacing * 2.0; offset += spacing)
         {
             float localX = uvpos.x * width - offset - spacing * 0.5;
             
-            if (abs(localX) < fire_width * 1.5)
+            if (abs(localX) < fire_width * 1.0)
             {
                 vec2 I = vec2(localX, fireY);
                 float tOffset = offset * 0.01;
@@ -229,7 +187,7 @@ void main()
         {
             float localX = uvpos.x * width - offset - spacing * 0.5;
             
-            if (abs(localX) < fire_width * 1.5)
+            if (abs(localX) < fire_width * 1.0)
             {
                 vec2 I = vec2(localX, fireY);
                 float tOffset = offset * 0.01 + 1.5;
@@ -266,18 +224,133 @@ void main()
             }
         }
         
+        // Fifth layer offset by 65% spacing
+        for (float offset = -spacing * 2.0 + spacing * 0.65; offset <= width + spacing * 2.0; offset += spacing)
+        {
+            float localX = uvpos.x * width - offset - spacing * 0.5;
+            
+            if (abs(localX) < fire_width * 1.5)
+            {
+                vec2 I = vec2(localX, fireY);
+                float tOffset = offset * 0.01 + 4.5;
+                vec4 fire = render_fire(I, iResolution, t + tOffset);
+                O += fire;
+            }
+        }
+        
+        // Sixth layer offset by 35% spacing
+        for (float offset = -spacing * 2.0 + spacing * 0.35; offset <= width + spacing * 2.0; offset += spacing)
+        {
+            float localX = uvpos.x * width - offset - spacing * 0.5;
+            
+            if (abs(localX) < fire_width * 1.5)
+            {
+                vec2 I = vec2(localX, fireY);
+                float tOffset = offset * 0.01 + 4.5;
+                vec4 fire = render_fire(I, iResolution, t + tOffset);
+                O += fire;
+            }
+        }
+        
         O = clamp(O, 0.0, 1.0);
         
+        // ====== Flickering ======
+        float flicker = 0.95 + 0.1 * sin(t * 15.0 + uvpos.x * 20.0) * sin(t * 23.0 + uvpos.y * 15.0);
+   //     O.rgb *= flicker;
+        
+        // ====== Glow effect (using fire's own color) ======
+        float intensity = (O.r + O.g + O.b) / 3.0;
+        float glow_strength = smoothstep(0.2, 0.6, intensity) * 0.3;
+    //    O.rgb += O.rgb * glow_strength;
+        
+    //    O = clamp(O, 0.0, 1.0);
+        
         float a_3d = (O.r + O.g + O.b) / 3.0;
-        a_3d = smoothstep(0.35, 0.8, a_3d);
-        a_3d *= smoothstep(0.5, 0.1, dist_from_burn);
+       a_3d = smoothstep(0.45, 0.9, a_3d);
+  //      a_3d *= smoothstep(0.5, 0.1, dist_from_burn);
         a_3d *= clamp(progress * 10.0, 0.0, 1.0);
-
-       // a_3d *= smoothstep(0.0, 0.1, uvpos.x) * smoothstep(1.0, 0.9, uvpos.x);
         a_3d *= smoothstep(0.0, 0.1, uvpos.x) * smoothstep(1.0, 0.9, uvpos.x) * smoothstep(0.0, 0.1, uvpos.y) * smoothstep(1.0, 0.9, uvpos.y);
-        // Composite 3D fire over 2D fire + background
-        result = vec4(O.rgb, 1.0) * a_3d + result * (1.0 - a_3d);
+        
+        // ====== Heat distortion on background ======
+        float distort_amount = a_3d * 0.02;
+        vec2 distort_uv = uvpos + vec2(
+            sin(uvpos.y * 30.0 + t * 5.5) * distort_amount,
+            cos(uvpos.x * 30.0 + t * 4.0) * distort_amount
+        );
+        distort_uv = clamp(distort_uv, 0.0, 1.0);
+        vec4 distorted_bg = get_pixel(distort_uv);
+        if (distort_uv.y < progress)
+        {
+            distorted_bg = vec4(0.0);
+        }
+        
+        // ====== Charred edge ======
+        float char_zone = smoothstep(0.0, 0.03, dist_from_burn) * smoothstep(0.06, 0.03, dist_from_burn);
+      vec3 char_color = vec3(0.1, 0.05, 0.0);
+        distorted_bg.rgb = mix(distorted_bg.rgb, char_color, char_zone * 0.7);
+        
+        // Composite 3D fire over distorted background
+        result = vec4(O.rgb, 1.0) * a_3d + distorted_bg * (1.0 - a_3d);
     }
+    
+    // ============ BURN LINE (rendered last, on top) ============
+    // Wavy burn line using noise
+// ============ BURN LINE (rendered last, on top) ============
+    // Control burn line size (increase for larger, decrease for smaller)
+    float burn_size = 4.0;  // 1.0 = normal, 2.0 = double size, 0.5 = half size
+    
+    // Wavy burn line using noise
+    float wave = sin(uvpos.x * 40.0 + t * 2.0) * 0.003 +
+                 sin(uvpos.x * 80.0 - t * 3.0) * 0.002 +
+                 sin(uvpos.x * 120.0 + t * 1.5) * 0.001;
+    
+    // Add randomness to burn edge
+    float edge_noise = hash2(vec2(floor(uvpos.x * width * 0.5), floor(t * 2.0))) * 0.01;
+    
+    float adjusted_dist = dist_from_burn + wave + edge_noise;
+    
+    // Hot ember core (white-yellow)
+    float ember_core = smoothstep(0.012 * burn_size, 0.0, abs(adjusted_dist)) * smoothstep(-0.005 * burn_size, 0.005 * burn_size, adjusted_dist);
+    vec3 core_color = vec3(1.0, 0.95, 0.7);
+    
+    // Inner glow (orange-yellow)
+    float inner_glow = smoothstep(0.025 * burn_size, 0.0, abs(adjusted_dist)) * smoothstep(-0.01 * burn_size, 0.01 * burn_size, adjusted_dist);
+    vec3 inner_color = vec3(1.0, 0.6, 0.1);
+    
+    // Outer glow (red-orange)
+    float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs(adjusted_dist)) * smoothstep(-0.02 * burn_size, 0.02 * burn_size, adjusted_dist);
+    vec3 outer_color = vec3(0.8, 0.2, 0.0);
+    
+    // Ember particles along the burn line
+    float ember_particle = 0.0;
+    for (float i = 0.0; i < 5.0; i += 1.0)
+    {
+        float px = hash1(i + floor(t * 0.5)) * 0.9 + 0.05;
+        float py = progress + sin(t * (2.0 + i) + i * 3.14159) * 0.015 * burn_size;
+        float spark_dist = length(vec2((uvpos.x - px) * width / height, uvpos.y - py));
+        ember_particle += smoothstep(0.02 * burn_size, 0.0, spark_dist) * (0.5 + 0.5 * sin(t * 10.0 + i * 5.0));
+    }
+    vec3 ember_color = vec3(1.0, 0.5, 0.0);
+    
+    // Combine burn line layers
+    vec3 burn_line = outer_color * outer_glow +
+                     inner_color * inner_glow +
+                     core_color * ember_core +
+                     ember_color * ember_particle;
+    
+    float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, ember_particle * 0.8));
+    
+    // Flicker the burn line
+    float line_flicker = 0.9 + 0.2 * sin(t * 20.0 + uvpos.x * 50.0) * sin(t * 17.0);
+    burn_line *= line_flicker;
+    
+    // Apply burn line
+    burn_alpha *= clamp(progress * 10.0, 0.0, 1.0);
+    burn_alpha *= smoothstep(0.0, 0.05, uvpos.x) * smoothstep(1.0, 0.65, uvpos.x);
+    
+    // Additive blend for burn line to make it glow on top
+    result.rgb += burn_line * burn_alpha;
+    result = clamp(result, 0.0, 1.0);
     
     gl_FragColor = result;
 }
