@@ -203,7 +203,7 @@ void main()
     if (dist_from_burn >= -0.02 && dist_from_burn <= 0.5)
     {
         float t = burn_progress * flame_speed * 10.0;
-        float fireY = (dist_from_burn - 0.05) * height * (0.1 + flame_height);
+        float fireY = (dist_from_burn - 0.05) * height * (0.2 + flame_height);
         float fire_width = 100.0 * (0.5 + flame_width);
         vec3 iResolution = vec3(fire_width, height * 0.15, height * 0.15);
         
@@ -273,8 +273,8 @@ void main()
         a_3d *= smoothstep(0.5, 0.1, dist_from_burn);
         a_3d *= clamp(progress * 10.0, 0.0, 1.0);
 
-        a_3d *= smoothstep(0.0, 0.1, uvpos.x) * smoothstep(1.0, 0.9, uvpos.x);
-        
+       // a_3d *= smoothstep(0.0, 0.1, uvpos.x) * smoothstep(1.0, 0.9, uvpos.x);
+        a_3d *= smoothstep(0.0, 0.1, uvpos.x) * smoothstep(1.0, 0.9, uvpos.x) * smoothstep(0.0, 0.1, uvpos.y) * smoothstep(1.0, 0.9, uvpos.y);
         // Composite 3D fire over 2D fire + background
         result = vec4(O.rgb, 1.0) * a_3d + result * (1.0 - a_3d);
     }
