@@ -78,7 +78,7 @@ vec4 render_fire(vec2 I, vec3 iResolution, float t)
     float d = 0.0;
     vec4 O = vec4(0.0);
     
-    for (int iter = 0; iter < 50; iter++)
+    for (int iter = 0; iter < 40; iter++)
     {
         vec3 p = z * normalize(vec3(I + I, 0.0) - iResolution.xyy);
         
@@ -288,6 +288,29 @@ void main()
         float char_zone = smoothstep(0.0, 0.03, dist_from_burn) * smoothstep(0.06, 0.03, dist_from_burn);
       vec3 char_color = vec3(0.1, 0.05, 0.0);
         distorted_bg.rgb = mix(distorted_bg.rgb, char_color, char_zone * 0.7);
+
+// ====== Blue fire zone (above char line) ======
+float blue_height = 0.13;  // Adjust this to change thickness
+float blue_start = 0.02;   // How far above the burn line it starts
+float blue_zone = smoothstep(blue_start, blue_start + 0.02, dist_from_burn) 
+                * smoothstep(blue_start + blue_height, blue_start + blue_height * 0.5, dist_from_burn);
+
+// Animate the blue fire
+float blue_flicker = 0.7 + 0.3 * sin(t * 12.0 + uvpos.x * 30.0) * sin(t * 8.0 + uvpos.x * 50.0);
+float blue_noise = sin(uvpos.x * 60.0 + t * 3.0) * 0.3 + sin(uvpos.x * 120.0 - t * 5.0) * 0.2;
+blue_zone *= blue_flicker * (0.8 + blue_noise * 0.4);
+blue_zone = clamp(blue_zone, 0.0, 1.0);
+
+// Blue fire color gradient (dark blue core to lighter blue edge)
+vec3 blue_core = vec3(0.0, 0.2, 0.8);
+vec3 blue_edge = vec3(0.3, 0.5, 1.0);
+float blue_gradient = smoothstep(blue_start, blue_start + blue_height * 0.7, dist_from_burn);
+vec3 blue_color = mix(blue_core, blue_edge, blue_gradient);
+
+// Blend blue fire into result
+distorted_bg.rgb = mix(distorted_bg.rgb, blue_color, blue_zone * 0.85);
+
+
         
         // Composite 3D fire over distorted background
         result = vec4(O.rgb, 1.0) * a_3d + distorted_bg * (1.0 - a_3d);
@@ -346,7 +369,7 @@ void main()
     
     // Apply burn line
     burn_alpha *= clamp(progress * 10.0, 0.0, 1.0);
-    burn_alpha *= smoothstep(0.0, 0.05, uvpos.x) * smoothstep(1.0, 0.65, uvpos.x);
+    burn_alpha *= smoothstep(0.0, 0.025, uvpos.x) * smoothstep(1.0, 0.975, uvpos.x);
     
     // Additive blend for burn line to make it glow on top
     result.rgb += burn_line * burn_alpha;
