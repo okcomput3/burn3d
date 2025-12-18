@@ -115,10 +115,10 @@ void main()
     float width = size.x;
     float height = size.y;
     
-    if (uvpos.x < 0.0 || uvpos.x > 1.0 || uvpos.y < 0.0 || uvpos.y > 1.0) {
-        gl_FragColor = vec4(0.0);
-        return;
-    }
+ //   if (uvpos.x < 0.0 || uvpos.x > 1.0 || uvpos.y < 0.0 || uvpos.y > 1.0) {
+ //       gl_FragColor = vec4(0.0);
+ //       return;
+ //   }
     
     float burn_progress = progress;
     if (direction == 1) burn_progress = 1.0 - burn_progress;
