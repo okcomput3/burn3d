@@ -258,14 +258,14 @@ void main()
     
     float t = burn_progress * flame_speed * 10.0;
     
-    float wave_fade = smoothstep(0.0, 0.1, progress) * smoothstep(1.0, 0.85, progress);
+    float wave_fade = smoothstep(0.00, 0.05, progress) * smoothstep(1.00, 0.95, progress);
     float side_progress = (burn_side == 4) ? progress * 0.5 : progress;
     
     // Paper fiber at this pixel (affects burn edge shape)
     float fiber = paper_fiber(uvpos, t);
     
     // Fiber-based offset: thin areas (low fiber) burn faster/further
-    float fiber_offset = (fiber - 0.5) * 0.025;
+    float fiber_offset = (fiber - 0.5) * 0.025 * wave_fade;
     
     // Bottom edge
     float wave_bottom = calc_wave_offset(uvpos.x, t, wave_fade);
@@ -307,7 +307,7 @@ void main()
     }
 
     float end_blur = smoothstep(0.75, 0.95, progress);
-    float distort_fade = smoothstep(0.0, 0.1, progress) * smoothstep(1.0, 0.85, progress);
+    float distort_fade = smoothstep(0.00, 0.05, progress) * smoothstep(1.00, 0.95, progress);
     float inv_aspect = width / height;
 
     // === PAPER CURLING EFFECT ===
@@ -474,9 +474,9 @@ void main()
         float burn_size = burn_size_base * thickness_var;
         
         // Fiber adds micro-variation to edge shape
-        float fiber_edge = (fiber - 0.5) * 0.008;
-        float wave = sin(edge_pos * 40.0 + t * 2.0) * 0.003 + sin(edge_pos * 80.0 - t * 3.0) * 0.002;
-        float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01;
+float fiber_edge = (fiber - 0.5) * 0.008 * wave_fade;
+float wave = (sin(edge_pos * 40.0 + t * 2.0) * 0.003 + sin(edge_pos * 80.0 - t * 3.0) * 0.002) * wave_fade;
+float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fade;
         float adjusted_dist = edge_dist + wave + edge_noise + fiber_edge;
         
         float abs_adj = abs(adjusted_dist);
@@ -571,9 +571,9 @@ void main()
         thickness_var = clamp(thickness_var, 0.4, 1.4);
         float burn_size = burn_size_base * thickness_var;
         
-        float fiber_edge = (fiber - 0.5) * 0.008;
-        float wave = sin(edge_pos * 40.0 + t * 2.0 + 5.0) * 0.003 + sin(edge_pos * 80.0 - t * 3.0 + 7.0) * 0.002;
-        float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0 + 1.0) * 0.01;
+        float fiber_edge = (fiber - 0.5) * 0.008 * wave_fade;;
+        float wave = sin(edge_pos * 40.0 + t * 2.0 + 5.0) * 0.003 + sin(edge_pos * 80.0 - t * 3.0 + 7.0) * 0.002 * wave_fade;;
+        float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0 + 1.0) * 0.01* wave_fade;;
         float adjusted_dist = edge_dist + wave + edge_noise + fiber_edge;
         
         float abs_adj = abs(adjusted_dist);
@@ -667,9 +667,9 @@ void main()
         thickness_var = clamp(thickness_var, 0.4, 1.4);
         float burn_size = burn_size_base * thickness_var;
         
-        float fiber_edge = (fiber - 0.5) * 0.008;
-        float wave = sin(edge_pos * 40.0 + t * 2.0 + 10.0) * 0.003 + sin(edge_pos * 80.0 - t * 3.0 + 14.0) * 0.002;
-        float edge_noise = smooth_hash(edge_pos * height * 0.5, t * 2.0 + 2.0) * 0.01;
+        float fiber_edge = (fiber - 0.5) * 0.008* wave_fade;;
+        float wave = sin(edge_pos * 40.0 + t * 2.0 + 10.0) * 0.003 + sin(edge_pos * 80.0 - t * 3.0 + 14.0) * 0.002* wave_fade;;
+        float edge_noise = smooth_hash(edge_pos * height * 0.5, t * 2.0 + 2.0) * 0.01* wave_fade;;
         float adjusted_dist = edge_dist + wave + edge_noise + fiber_edge;
         
         float abs_adj = abs(adjusted_dist);
@@ -751,9 +751,9 @@ void main()
         thickness_var = clamp(thickness_var, 0.4, 1.4);
         float burn_size = burn_size_base * thickness_var;
         
-        float fiber_edge = (fiber - 0.5) * 0.008;
-        float wave = sin(edge_pos * 40.0 + t * 2.0 + 15.0) * 0.003 + sin(edge_pos * 80.0 - t * 3.0 + 21.0) * 0.002;
-        float edge_noise = smooth_hash(edge_pos * height * 0.5, t * 2.0 + 3.0) * 0.01;
+        float fiber_edge = (fiber - 0.5) * 0.008* wave_fade;;
+        float wave = sin(edge_pos * 40.0 + t * 2.0 + 15.0) * 0.003 + sin(edge_pos * 80.0 - t * 3.0 + 21.0) * 0.002* wave_fade;;
+        float edge_noise = smooth_hash(edge_pos * height * 0.5, t * 2.0 + 3.0) * 0.01* wave_fade;;
         float adjusted_dist = edge_dist + wave + edge_noise + fiber_edge;
         
         float abs_adj = abs(adjusted_dist);
