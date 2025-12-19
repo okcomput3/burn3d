@@ -59,6 +59,7 @@ uniform float flame_width;
 uniform float flame_height;
 uniform vec4 flame_color;
 
+
 // ============ 3D FIRE FUNCTIONS ============
 vec4 tanh_approx(vec4 x)
 {
@@ -66,11 +67,18 @@ vec4 tanh_approx(vec4 x)
     return clamp(x * (27.0 + x2) / (27.0 + 9.0 * x2), -1.0, 1.0);
 }
 
-vec4 render_fire(vec2 I, vec3 iResolution, float t)
+// Float version for single values
+float tanh_approx_f(float x)
+{
+    float x2 = x * x;
+    return clamp(x * (27.0 + x2) / (27.0 + 9.0 * x2), -1.0, 1.0);
+}
+
+vec4 render_fire(vec2 I, vec3 iResolution, float t, float color_variation)
 {
     float z = 0.0;
     float d = 0.0;
-    vec4 O = vec4(0.0);
+    float intensity = 0.0;
     
     for (int iter = 0; iter < 40; iter++)
     {
@@ -89,9 +97,39 @@ vec4 render_fire(vec2 I, vec3 iResolution, float t)
         d = 0.01 + abs(length(p.xz) + p.y * 0.3 - 0.5) / 7.0;
         z += d;
         
-        if (d < 0.80) O += (sin(z / 3.0 + vec4(7.0, 2.0, 3.0, 0.0)) + 1.1) / d;
+        if (d < 0.80) {
+            intensity += (1.1) / d;
+        }
     }
-    return tanh_approx(O / 1000.0);
+    
+    intensity = tanh_approx_f(intensity / 1000.0);
+    
+    // Add some variation based on z and color_variation parameter
+    float variation = sin(z * 0.5 + color_variation) * 0.15;
+    intensity = clamp(intensity + variation, 0.0, 1.0);
+    
+    // Fire color gradient: dark red -> red -> orange -> yellow -> white
+    vec3 fire_col;
+    float i = intensity;
+    
+    // Smoother gradient using mix
+    vec3 col1 = vec3(0.2, 0.05, 0.0);   // Dark red/black
+    vec3 col2 = vec3(0.9, 0.2, 0.0);    // Red
+    vec3 col3 = vec3(1.0, 0.5, 0.0);    // Orange
+    vec3 col4 = vec3(1.0, 0.8, 0.2);    // Yellow
+    vec3 col5 = vec3(1.0, 0.95, 0.8);   // White/yellow
+    
+    if (i < 0.25) {
+        fire_col = mix(col1, col2, i / 0.25);
+    } else if (i < 0.5) {
+        fire_col = mix(col2, col3, (i - 0.25) / 0.25);
+    } else if (i < 0.75) {
+        fire_col = mix(col3, col4, (i - 0.5) / 0.25);
+    } else {
+        fire_col = mix(col4, col5, (i - 0.75) / 0.25);
+    }
+    
+    return vec4(fire_col * intensity, intensity);
 }
 
 // Simple hash for burn line noise
@@ -119,8 +157,9 @@ float calc_wave_offset(float pos, float t, float wave_fade) {
 // iResolution: fire resolution
 // t: time
 // time_offset: time offset for this edge
+// color_var: color variation for this position
 vec4 accumulate_nearby_fire(float pixel_pos, float spacing, float half_spacing, float shift,
-                            float width_check, float fireY, vec3 iResolution, float t, float time_offset)
+                            float width_check, float fireY, vec3 iResolution, float t, float time_offset, float color_var)
 {
     vec4 accum = vec4(0.0);
     
@@ -142,7 +181,9 @@ vec4 accumulate_nearby_fire(float pixel_pos, float spacing, float half_spacing, 
         
         if (abs(localX) < width_check)
         {
-            accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + time_offset) * 0.5;
+            // Vary color per column for more variety
+            float local_color_var = color_var + float(col) * 0.3;
+            accum += render_fire(vec2(localX, fireY), iResolution, t + off * 0.01 + time_offset, local_color_var) * 0.5;
         }
     }
     
@@ -223,11 +264,10 @@ vec4 fire_color_accum = vec4(0.0);
     // Only render fire near the boundary, and only on the unburned side
     if (dist_from_burn >= -0.05 && dist_from_burn <= 0.5)
     {
-        float fire_scale = 0.2 + flame_height;
-        float fire_width_scale = max(width * 0.12, 5.0) * (1.5 + flame_width);
-        float fire_res = max(height * 0.15, 0.01);
-        vec3 iResolution = vec3(fire_width_scale, fire_res, fire_res);
-        float spacing = fire_width_scale * 0.5;
+        // Base fire parameters
+        float fire_scale_base = 0.2 + flame_height;
+        float fire_width_base = max(width * 0.12, 5.0) * (1.5 + flame_width);
+        float fire_res_base = max(height * 0.15, 0.01);
         
         // Pre-compute arrays - keeping exact original values
         float offsets[6];
@@ -238,22 +278,35 @@ vec4 fire_color_accum = vec4(0.0);
         shifts[0] = 0.0;  shifts[1] = 0.25; shifts[2] = 0.5;
         shifts[3] = 0.75; shifts[4] = 0.65; shifts[5] = 0.35;
 
-        // Pre-compute common values
-        float half_spacing = spacing * 0.5;
-
-        // Fire from bottom edge - only if this pixel is within horizontal bounds
 // Fire from bottom edge - soft blend instead of hard clip
 if (dist_from_bottom >= -0.05 && dist_from_bottom <= 0.3) {
     float h_blend = smoothstep(effective_left - 0.05, effective_left + 0.05, uvpos.x) 
                   * smoothstep(effective_right + 0.05, effective_right - 0.05, uvpos.x);
     
+    // Unique size variation for bottom edge
+    float size_var_bottom = 1.0 + 0.15 * sin(uvpos.x * 8.0 + t * 0.7) + 0.1 * sin(uvpos.x * 20.0 - t * 1.1);
+    float fire_scale = fire_scale_base * size_var_bottom;
+    float fire_width_scale = fire_width_base * (0.95 + 0.1 * sin(t * 0.3));
+    float fire_res = fire_res_base * 1.0;
+    vec3 iResolution = vec3(fire_width_scale, fire_res, fire_res);
+    float spacing = fire_width_scale * 0.5;
+    float half_spacing = spacing * 0.5;
+    
+    // Slight angle variation for bottom
+    float angle_bottom = 0.03 * sin(uvpos.x * 5.0 + t * 0.4);
+    
+    // Color variation based on position and time
+    float color_var_bottom = sin(uvpos.x * 12.0 + t * 0.8) * 1.5 + sin(uvpos.x * 25.0 - t * 1.2) * 0.8;
+    
     float fireY = (dist_from_bottom - 0.05) * height * fire_scale;
     float pixel_pos = uvpos.x * width;
+    // Apply slight angle offset
+    pixel_pos += fireY * angle_bottom;
     pixel_pos += (hash2(uvpos * 100.0 + t) - 0.5) * spacing * 0.01;
     for(int i = 0; i < 6; i++) {
         float width_check = fire_width_scale * (i < 2 ? 1.0 : 1.5);
         fire_bottom += accumulate_nearby_fire(pixel_pos, spacing, half_spacing, shifts[i],
-                                               width_check, fireY, iResolution, t, offsets[i]);
+                                               width_check, fireY, iResolution, t, offsets[i], color_var_bottom + float(i) * 0.5);
     }
     fire_bottom *= h_blend;
 }
@@ -263,13 +316,30 @@ if (dist_from_top >= -0.05 && dist_from_top <= 0.3) {
     float h_blend = smoothstep(effective_left - 0.05, effective_left + 0.05, uvpos.x) 
                   * smoothstep(effective_right + 0.05, effective_right - 0.05, uvpos.x);
     
+    // Unique size variation for top edge - slightly larger, different rhythm
+    float size_var_top = 1.1 + 0.12 * sin(uvpos.x * 10.0 + t * 0.9 + 2.0) + 0.08 * sin(uvpos.x * 25.0 - t * 0.8);
+    float fire_scale = fire_scale_base * size_var_top;
+    float fire_width_scale = fire_width_base * (1.05 + 0.08 * sin(t * 0.35 + 1.0));
+    float fire_res = fire_res_base * 1.1;
+    vec3 iResolution = vec3(fire_width_scale, fire_res, fire_res);
+    float spacing = fire_width_scale * 0.5;
+    float half_spacing = spacing * 0.5;
+    
+    // Slight angle variation for top - opposite lean tendency
+    float angle_top = -0.025 * sin(uvpos.x * 6.0 + t * 0.5 + 1.5);
+    
+    // Color variation - different pattern than bottom
+    float color_var_top = sin(uvpos.x * 15.0 + t * 0.6 + 3.0) * 1.2 + sin(uvpos.x * 30.0 - t * 0.9) * 1.0;
+    
     float fireY = (dist_from_top - 0.05) * height * fire_scale;
     float pixel_pos = uvpos.x * width;
+    // Apply slight angle offset
+    pixel_pos += fireY * angle_top;
     pixel_pos += (hash2(uvpos * 100.0 + t) - 0.5) * spacing * 0.01;
     for(int i = 0; i < 6; i++) {
         float width_check = fire_width_scale * (i < 2 ? 1.0 : 1.5);
         fire_top += accumulate_nearby_fire(pixel_pos, spacing, half_spacing, shifts[i],
-                                            width_check, fireY, iResolution, t, offsets[i] + 20.0);
+                                            width_check, fireY, iResolution, t, offsets[i] + 20.0, color_var_top + float(i) * 0.4);
     }
     fire_top *= h_blend;
 }
@@ -279,13 +349,30 @@ if (dist_from_left >= -0.05 && dist_from_left <= 0.3) {
     float v_blend = smoothstep(effective_bottom - 0.05, effective_bottom + 0.05, uvpos.y) 
                   * smoothstep(effective_top + 0.05, effective_top - 0.05, uvpos.y);
     
+    // Unique size variation for left edge - slightly smaller, different pattern
+    float size_var_left = 0.92 + 0.18 * sin(uvpos.y * 7.0 + t * 0.6 + 4.0) + 0.1 * sin(uvpos.y * 18.0 - t * 1.3);
+    float fire_scale = fire_scale_base * size_var_left;
+    float fire_width_scale = fire_width_base * (0.9 + 0.12 * sin(t * 0.4 + 2.0));
+    float fire_res = fire_res_base * 0.95;
+    vec3 iResolution = vec3(fire_width_scale, fire_res, fire_res);
+    float spacing = fire_width_scale * 0.5;
+    float half_spacing = spacing * 0.5;
+    
+    // Slight angle variation for left
+    float angle_left = 0.035 * sin(uvpos.y * 4.0 + t * 0.45 + 3.0);
+    
+    // Color variation - unique pattern for left edge
+    float color_var_left = sin(uvpos.y * 10.0 + t * 0.7 + 5.0) * 1.8 + sin(uvpos.y * 22.0 - t * 1.0) * 0.6;
+    
     float fireY = (dist_from_left - 0.05) * width * fire_scale;
     float pixel_pos = uvpos.y * height;
+    // Apply slight angle offset
+    pixel_pos += fireY * angle_left;
     pixel_pos += (hash2(uvpos * 100.0 + t * 1.1) - 0.5) * spacing * 0.01;
     for(int i = 0; i < 6; i++) {
         float width_check = fire_width_scale * (i < 2 ? 1.0 : 1.5);
         fire_left += accumulate_nearby_fire(pixel_pos, spacing, half_spacing, shifts[i],
-                                             width_check, fireY, iResolution, t, offsets[i] + 40.0);
+                                             width_check, fireY, iResolution, t, offsets[i] + 40.0, color_var_left + float(i) * 0.6);
     }
     fire_left *= v_blend;
 }
@@ -295,13 +382,30 @@ if (dist_from_right >= -0.05 && dist_from_right <= 0.3) {
     float v_blend = smoothstep(effective_bottom - 0.05, effective_bottom + 0.05, uvpos.y) 
                   * smoothstep(effective_top + 0.05, effective_top - 0.05, uvpos.y);
     
+    // Unique size variation for right edge - medium size, unique rhythm
+    float size_var_right = 1.05 + 0.14 * sin(uvpos.y * 9.0 + t * 0.75 + 6.0) + 0.09 * sin(uvpos.y * 22.0 - t * 0.95);
+    float fire_scale = fire_scale_base * size_var_right;
+    float fire_width_scale = fire_width_base * (1.0 + 0.1 * sin(t * 0.38 + 3.5));
+    float fire_res = fire_res_base * 1.05;
+    vec3 iResolution = vec3(fire_width_scale, fire_res, fire_res);
+    float spacing = fire_width_scale * 0.5;
+    float half_spacing = spacing * 0.5;
+    
+    // Slight angle variation for right - different lean
+    float angle_right = -0.028 * sin(uvpos.y * 5.5 + t * 0.55 + 5.0);
+    
+    // Color variation - unique pattern for right edge
+    float color_var_right = sin(uvpos.y * 13.0 + t * 0.85 + 7.0) * 1.4 + sin(uvpos.y * 28.0 - t * 1.1) * 0.9;
+    
     float fireY = (dist_from_right - 0.05) * width * fire_scale;
     float pixel_pos = uvpos.y * height;
+    // Apply slight angle offset
+    pixel_pos += fireY * angle_right;
     pixel_pos += (hash2(uvpos * 100.0 + t * 1.1) - 0.5) * spacing * 0.01;
     for(int i = 0; i < 6; i++) {
         float width_check = fire_width_scale * (i < 2 ? 1.0 : 1.5);
         fire_right += accumulate_nearby_fire(pixel_pos, spacing, half_spacing, shifts[i],
-                                              width_check, fireY, iResolution, t, offsets[i] + 60.0);
+                                              width_check, fireY, iResolution, t, offsets[i] + 60.0, color_var_right + float(i) * 0.45);
     }
     fire_right *= v_blend;
 }
@@ -309,6 +413,9 @@ if (dist_from_right >= -0.05 && dist_from_right <= 0.3) {
 
 // Take maximum of all edges instead of accumulating to prevent bright overlap
         fire_color_accum = max(max(fire_bottom, fire_top), max(fire_left, fire_right));
+        
+
+        
         fire_color_accum = clamp(fire_color_accum, 0.0, 1.0);
         
         // Apply blur softening at the end
@@ -409,7 +516,7 @@ if (inside_unburned) {
 
 // ====== Blue fire zone - only inside unburned area ======
 if (inside_unburned) {
-    float blue_height = 0.13;
+    float blue_height = 0.06;
     float blue_start = 0.02;
     float blue_zone = smoothstep(blue_start, blue_start + 0.02, dist_from_burn) 
                     * smoothstep(blue_start + blue_height, blue_start + blue_height * 0.5, dist_from_burn);
@@ -446,7 +553,7 @@ if (inside_unburned) {
     
     // ============ BURN LINE - ALL SIDES ============
     // Only render burn lines on the boundary of the unburned area
-    float burn_size = 4.0 * (1.0 + end_blur * 2.0);  // Expand burn line at end for blur
+    float burn_size_base = 4.0 * (1.0 + end_blur * 2.0);  // Expand burn line at end for blur
     
     vec3 burn_line_total = vec3(0.0);
     float burn_alpha_total = 0.0;
@@ -459,6 +566,14 @@ if (inside_unburned) {
     if (uvpos.x >= effective_left && uvpos.x <= effective_right) {
         float edge_dist = dist_from_bottom;
         float edge_pos = uvpos.x;
+        
+        // Varying thickness for fire-like appearance
+        float thickness_var = 0.6 + 0.4 * sin(edge_pos * 15.0 + t * 1.5)
+                            + 0.3 * sin(edge_pos * 35.0 - t * 2.3)
+                            + 0.2 * sin(edge_pos * 70.0 + t * 3.7)
+                            + 0.15 * (hash2(vec2(floor(edge_pos * 20.0), floor(t * 0.8))) - 0.5);
+        thickness_var = clamp(thickness_var, 0.4, 1.4);
+        float burn_size = burn_size_base * thickness_var;
         
         float wave = sin(edge_pos * 40.0 + t * 2.0) * 0.003 
                    + sin(edge_pos * 80.0 - t * 3.0) * 0.002;
@@ -510,6 +625,14 @@ if (inside_unburned) {
         float edge_dist = dist_from_top;
         float edge_pos = uvpos.x;
         
+        // Varying thickness for fire-like appearance
+        float thickness_var = 0.6 + 0.4 * sin(edge_pos * 15.0 + t * 1.5 + 3.0)
+                            + 0.3 * sin(edge_pos * 35.0 - t * 2.3 + 5.0)
+                            + 0.2 * sin(edge_pos * 70.0 + t * 3.7 + 7.0)
+                            + 0.15 * (hash2(vec2(floor(edge_pos * 20.0) + 50.0, floor(t * 0.8))) - 0.5);
+        thickness_var = clamp(thickness_var, 0.4, 1.4);
+        float burn_size = burn_size_base * thickness_var;
+        
         float wave = sin(edge_pos * 40.0 + t * 2.0 + 5.0) * 0.003 
                    + sin(edge_pos * 80.0 - t * 3.0 + 7.0) * 0.002;
         float edge_noise = hash2(vec2(floor(edge_pos * width * 0.5), floor(t * 2.0) + 1.0)) * 0.01;
@@ -559,6 +682,14 @@ if (inside_unburned) {
         float edge_dist = dist_from_left;
         float edge_pos = uvpos.y;
         
+        // Varying thickness for fire-like appearance
+        float thickness_var = 0.6 + 0.4 * sin(edge_pos * 15.0 + t * 1.5 + 6.0)
+                            + 0.3 * sin(edge_pos * 35.0 - t * 2.3 + 10.0)
+                            + 0.2 * sin(edge_pos * 70.0 + t * 3.7 + 14.0)
+                            + 0.15 * (hash2(vec2(floor(edge_pos * 20.0) + 100.0, floor(t * 0.8))) - 0.5);
+        thickness_var = clamp(thickness_var, 0.4, 1.4);
+        float burn_size = burn_size_base * thickness_var;
+        
         float wave = sin(edge_pos * 40.0 + t * 2.0 + 10.0) * 0.003 
                    + sin(edge_pos * 80.0 - t * 3.0 + 14.0) * 0.002;
         float edge_noise = hash2(vec2(floor(edge_pos * height * 0.5), floor(t * 2.0) + 2.0)) * 0.01;
@@ -607,6 +738,14 @@ if (inside_unburned) {
     if (uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
         float edge_dist = dist_from_right;
         float edge_pos = uvpos.y;
+        
+        // Varying thickness for fire-like appearance
+        float thickness_var = 0.6 + 0.4 * sin(edge_pos * 15.0 + t * 1.5 + 9.0)
+                            + 0.3 * sin(edge_pos * 35.0 - t * 2.3 + 15.0)
+                            + 0.2 * sin(edge_pos * 70.0 + t * 3.7 + 21.0)
+                            + 0.15 * (hash2(vec2(floor(edge_pos * 20.0) + 150.0, floor(t * 0.8))) - 0.5);
+        thickness_var = clamp(thickness_var, 0.4, 1.4);
+        float burn_size = burn_size_base * thickness_var;
         
         float wave = sin(edge_pos * 40.0 + t * 2.0 + 15.0) * 0.003 
                    + sin(edge_pos * 80.0 - t * 3.0 + 21.0) * 0.002;
@@ -663,6 +802,7 @@ if (inside_unburned) {
     gl_FragColor = clamp(result, 0.0, 1.0);
 }
 )";
+
 
 namespace wf
 {
