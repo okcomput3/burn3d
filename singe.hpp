@@ -182,13 +182,43 @@ float calc_burn_velocity(float pos, float t, float wave_fade) {
     return abs(velocity) * wave_fade * 10.0;
 }
 
+// Convert RGB to HSV
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+// Convert HSV to RGB
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// Apply flame_color hue to a base color
+// If flame_color is white/unsaturated, keep original colors
+vec3 apply_flame_hue(vec3 base_color) {
+    vec3 flame_hsv = rgb2hsv(flame_color.rgb);
+    // If flame_color has low saturation (white/grey), return original color
+    if (flame_hsv.y < 0.1) {
+        return base_color;
+    }
+    vec3 base_hsv = rgb2hsv(base_color);
+    // Replace hue with flame_color's hue, keep original saturation and value
+    return hsv2rgb(vec3(flame_hsv.x, base_hsv.y, base_hsv.z));
+}
+
 // Velocity heat color with blue core support
 vec3 velocity_heat_color(vec3 base_color, float velocity, float proximity) {
     float heat = smoothstep(0.0, 0.4, velocity);
     
-    vec3 orange_hot = vec3(1.0, 0.5, 0.0);
-    vec3 red_hot = vec3(1.0, 0.2, 0.05);
-    vec3 white_hot = vec3(0.5, 0.0, 0.0);
+    vec3 orange_hot = apply_flame_hue(vec3(1.0, 0.5, 0.0));
+    vec3 red_hot = apply_flame_hue(vec3(1.0, 0.2, 0.05));
+    vec3 white_hot = apply_flame_hue(vec3(0.5, 0.0, 0.0));
     
     vec3 heat_color = base_color;
     heat_color = mix(heat_color, orange_hot, smoothstep(0.0, 0.25, heat));
@@ -249,7 +279,7 @@ float calc_smoke_wisps(vec2 uv, float dist_from_burn, float t, float progress_fa
 
 void main()
 {
-    int burn_side = 0;
+    int burn_side = 2;
     float width = size.x;
     float height = size.y;
 
@@ -472,7 +502,7 @@ float fiber = paper_fiber(uvpos, t);
         float illumination_zone = smoothstep(0.30, 0.0, dist_from_burn);
         float flicker_illum = 0.8 + 0.2 * sin(t * 12.0 + uvpos.x * 20.0) * sin(t * 9.0 + uvpos.y * 15.0);
         flicker_illum *= 0.9 + 0.1 * sin(t * 17.0 + uvpos.x * 35.0);
-        vec3 fire_light = vec3(1.0, 0.55, 0.15) * illumination_zone * 0.18 * flicker_illum;
+        vec3 fire_light = apply_flame_hue(vec3(1.0, 0.55, 0.15)) * illumination_zone * 0.18 * flicker_illum;
         fire_light *= distort_fade;
         // Don't illuminate heavily shadowed areas as much
         bg.rgb += fire_light * (1.0 - shadow_intensity * 0.5);
@@ -545,16 +575,16 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         // Rising ash particles
         float ash_particles = calc_rising_ash(uvpos, effective_left, effective_right, effective_bottom, t, inv_aspect, false);
         
-        // Base colors
-        vec3 base_outer = vec3(0.8, 0.2, 0.0);
-        vec3 base_inner = vec3(1.0, 0.6, 0.1);
-        vec3 base_core = vec3(1.0, 0.95, 0.7);
-        vec3 base_ember = vec3(1.0, 0.5, 0.0);
-        vec3 base_red_ember = vec3(1.0, 0.1, 0.0);
+        // Base colors with flame_color hue applied
+        vec3 base_outer = apply_flame_hue(vec3(0.8, 0.2, 0.0));
+        vec3 base_inner = apply_flame_hue(vec3(1.0, 0.6, 0.1));
+        vec3 base_core = apply_flame_hue(vec3(1.0, 0.95, 0.7));
+        vec3 base_ember = apply_flame_hue(vec3(1.0, 0.5, 0.0));
+        vec3 base_red_ember = apply_flame_hue(vec3(1.0, 0.1, 0.0));
         vec3 ash_color = vec3(0.12, 0.10, 0.08);
         
         // Blue flame at hottest core (oxygen-rich combustion)
-        vec3 blue_flame = vec3(0.3, 0.5, 1.0);
+        vec3 blue_flame = apply_flame_hue(vec3(0.3, 0.5, 1.0));
         float blue_core = smoothstep(0.006 * burn_size, 0.0, abs_adj) * 
                           smoothstep(-0.002 * burn_size, 0.002 * burn_size, adjusted_dist);
         
@@ -644,13 +674,13 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
             ash_particles += smoothstep(ash_size, 0.0, ash_dist) * (1.0 - life) * 0.4;
         }
         
-        vec3 base_outer = vec3(0.8, 0.2, 0.0);
-        vec3 base_inner = vec3(1.0, 0.6, 0.1);
-        vec3 base_core = vec3(1.0, 0.95, 0.7);
-        vec3 base_ember = vec3(1.0, 0.5, 0.0);
-        vec3 base_red_ember = vec3(1.0, 0.1, 0.0);
+        vec3 base_outer = apply_flame_hue(vec3(0.8, 0.2, 0.0));
+        vec3 base_inner = apply_flame_hue(vec3(1.0, 0.6, 0.1));
+        vec3 base_core = apply_flame_hue(vec3(1.0, 0.95, 0.7));
+        vec3 base_ember = apply_flame_hue(vec3(1.0, 0.5, 0.0));
+        vec3 base_red_ember = apply_flame_hue(vec3(1.0, 0.1, 0.0));
         vec3 ash_color = vec3(0.12, 0.10, 0.08);
-        vec3 blue_flame = vec3(0.3, 0.5, 1.0);
+        vec3 blue_flame = apply_flame_hue(vec3(0.3, 0.5, 1.0));
         
         float blue_core = smoothstep(0.006 * burn_size, 0.0, abs_adj) * 
                           smoothstep(-0.002 * burn_size, 0.002 * burn_size, adjusted_dist);
@@ -728,13 +758,13 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float ash_particles = calc_rising_ash(uvpos, effective_bottom, effective_top, effective_left, t + 20.0, inv_aspect, true);
         
-        vec3 base_outer = vec3(0.8, 0.2, 0.0);
-        vec3 base_inner = vec3(1.0, 0.6, 0.1);
-        vec3 base_core = vec3(1.0, 0.95, 0.7);
-        vec3 base_ember = vec3(1.0, 0.5, 0.0);
-        vec3 base_red_ember = vec3(1.0, 0.1, 0.0);
+        vec3 base_outer = apply_flame_hue(vec3(0.8, 0.2, 0.0));
+        vec3 base_inner = apply_flame_hue(vec3(1.0, 0.6, 0.1));
+        vec3 base_core = apply_flame_hue(vec3(1.0, 0.95, 0.7));
+        vec3 base_ember = apply_flame_hue(vec3(1.0, 0.5, 0.0));
+        vec3 base_red_ember = apply_flame_hue(vec3(1.0, 0.1, 0.0));
         vec3 ash_color = vec3(0.12, 0.10, 0.08);
-        vec3 blue_flame = vec3(0.3, 0.5, 1.0);
+        vec3 blue_flame = apply_flame_hue(vec3(0.3, 0.5, 1.0));
         
         float blue_core = smoothstep(0.006 * burn_size, 0.0, abs_adj) * 
                           smoothstep(-0.002 * burn_size, 0.002 * burn_size, adjusted_dist);
@@ -812,13 +842,13 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float ash_particles = calc_rising_ash(uvpos, effective_bottom, effective_top, effective_right, t + 30.0, inv_aspect, true);
         
-        vec3 base_outer = vec3(0.8, 0.2, 0.0);
-        vec3 base_inner = vec3(1.0, 0.6, 0.1);
-        vec3 base_core = vec3(1.0, 0.95, 0.7);
-        vec3 base_ember = vec3(1.0, 0.5, 0.0);
-        vec3 base_red_ember = vec3(1.0, 0.1, 0.0);
+        vec3 base_outer = apply_flame_hue(vec3(0.8, 0.2, 0.0));
+        vec3 base_inner = apply_flame_hue(vec3(1.0, 0.6, 0.1));
+        vec3 base_core = apply_flame_hue(vec3(1.0, 0.95, 0.7));
+        vec3 base_ember = apply_flame_hue(vec3(1.0, 0.5, 0.0));
+        vec3 base_red_ember = apply_flame_hue(vec3(1.0, 0.1, 0.0));
         vec3 ash_color = vec3(0.12, 0.10, 0.08);
-        vec3 blue_flame = vec3(0.3, 0.5, 1.0);
+        vec3 blue_flame = apply_flame_hue(vec3(0.3, 0.5, 1.0));
         
         float blue_core = smoothstep(0.006 * burn_size, 0.0, abs_adj) * 
                           smoothstep(-0.002 * burn_size, 0.002 * burn_size, adjusted_dist);
@@ -871,7 +901,6 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
     gl_FragColor = clamp(result, 0.0, 1.0);
 }
 )";
-
 namespace wf
 {
 namespace burn
