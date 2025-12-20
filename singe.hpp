@@ -267,7 +267,7 @@ void main()
     float t = burn_progress * flame_speed * 10.0;
     
     float wave_fade = smoothstep(0.00, 0.05, progress) * smoothstep(1.00, 0.95, progress);
-float side_progress = (burn_side == 4) ? progress * 0.5 : progress;
+float side_progress = (burn_side == 4 || burn_side == 5 || burn_side == 6) ? progress * 0.5 : progress;
 
 
 // Edge fade for single-side burns - fades fire to alpha at perpendicular edges
@@ -296,22 +296,22 @@ float fiber = paper_fiber(uvpos, t);
     
     // Bottom edge
     float wave_bottom = calc_wave_offset(uvpos.x, t, wave_fade);
-    float effective_bottom = (burn_side == 0 || burn_side == 4) ? side_progress + wave_bottom + fiber_offset : 0.0;
+    float effective_bottom = (burn_side == 0 || burn_side == 5 || burn_side == 6) ? side_progress + wave_bottom + fiber_offset : 0.0;
     float dist_from_bottom = uvpos.y - effective_bottom;
     
     // Top edge
     float wave_top = calc_wave_offset(uvpos.x, t + 5.0, wave_fade);
-    float effective_top = (burn_side == 1 || burn_side == 4) ? 1.0 - side_progress - wave_top - fiber_offset : 1.0;
+    float effective_top = (burn_side == 1 || burn_side == 5|| burn_side == 6) ? 1.0 - side_progress - wave_top - fiber_offset : 1.0;
     float dist_from_top = effective_top - uvpos.y;
     
     // Left edge
     float wave_left = calc_wave_offset(uvpos.y, t + 10.0, wave_fade);
-    float effective_left = (burn_side == 2 || burn_side == 4) ? side_progress + wave_left + fiber_offset : 0.0;
+    float effective_left = (burn_side == 2 || burn_side == 4|| burn_side == 6) ? side_progress + wave_left + fiber_offset : 0.0;
     float dist_from_left = uvpos.x - effective_left;
     
     // Right edge
     float wave_right = calc_wave_offset(uvpos.y, t + 15.0, wave_fade);
-    float effective_right = (burn_side == 3 || burn_side == 4) ? 1.0 - side_progress - wave_right - fiber_offset : 1.0;
+    float effective_right = (burn_side == 3 || burn_side == 4|| burn_side == 6) ? 1.0 - side_progress - wave_right - fiber_offset : 1.0;
     float dist_from_right = effective_right - uvpos.x;
     
     bool inside_unburned = (uvpos.y >= effective_bottom && uvpos.y <= effective_top &&
@@ -321,10 +321,10 @@ float fiber = paper_fiber(uvpos, t);
                        
     
     float dist_from_burn = 1000.0;
-    if (burn_side == 0 || burn_side == 4) dist_from_burn = min(dist_from_burn, dist_from_bottom);
-    if (burn_side == 1 || burn_side == 4) dist_from_burn = min(dist_from_burn, dist_from_top);
-    if (burn_side == 2 || burn_side == 4) dist_from_burn = min(dist_from_burn, dist_from_left);
-    if (burn_side == 3 || burn_side == 4) dist_from_burn = min(dist_from_burn, dist_from_right);
+    if (burn_side == 0 || burn_side == 5 || burn_side == 6) dist_from_burn = min(dist_from_burn, dist_from_bottom);
+    if (burn_side == 1 || burn_side == 5 || burn_side == 6) dist_from_burn = min(dist_from_burn, dist_from_top);
+    if (burn_side == 2 || burn_side == 4 || burn_side == 6) dist_from_burn = min(dist_from_burn, dist_from_left);
+    if (burn_side == 3 || burn_side == 4 || burn_side == 6) dist_from_burn = min(dist_from_burn, dist_from_right);
 
     // Early exit for far pixels
     if (dist_from_burn > 0.5) {
@@ -362,7 +362,7 @@ float fiber = paper_fiber(uvpos, t);
     // === HEAT DISTORTION ===
     vec2 total_distort = curl_offset;
     
-    if (burn_side == 0 || burn_side == 4) {
+    if (burn_side == 0 || burn_side == 5) {
         float edge_proximity = smoothstep(0.15, 0.0, dist_from_bottom) * smoothstep(-0.02, 0.02, dist_from_bottom);
         float wave_deriv = cos(uvpos.x * 8.0 + t * 0.2) * 0.035 * 8.0
                          + cos(uvpos.x * 12.0 + t * 0.4) * 0.025 * 12.0
@@ -380,7 +380,7 @@ float fiber = paper_fiber(uvpos, t);
         total_distort.x += edge_proximity * wave_deriv * 0.3 * flicker;
     }
     
-    if (burn_side == 1 || burn_side == 4) {
+    if (burn_side == 1 || burn_side == 5) {
         float edge_proximity = smoothstep(0.15, 0.0, dist_from_top) * smoothstep(-0.02, 0.02, dist_from_top);
         float wave_deriv = cos(uvpos.x * 8.0 + t * 0.2) * 0.035 * 8.0
                          + cos(uvpos.x * 12.0 + t * 0.4) * 0.025 * 12.0
@@ -489,7 +489,7 @@ float fiber = paper_fiber(uvpos, t);
     float flame_turb = turbulence(vec2(uvpos.x * 15.0, uvpos.y * 15.0 + t * 0.5), t);
 
     // === BOTTOM EDGE ===
-    if ((burn_side == 0 || burn_side == 4) && uvpos.x >= effective_left && uvpos.x <= effective_right) {
+    if ((burn_side == 0 || burn_side == 5|| burn_side == 6) && uvpos.x >= effective_left && uvpos.x <= effective_right) {
         float edge_dist = dist_from_bottom;
         float edge_pos = uvpos.x;
         float burn_velocity = calc_burn_velocity(edge_pos, t, wave_fade);
@@ -588,7 +588,7 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
     }
 
     // === TOP EDGE ===
-    if ((burn_side == 1 || burn_side == 4) && uvpos.x >= effective_left && uvpos.x <= effective_right) {
+    if ((burn_side == 1 || burn_side == 5 || burn_side == 6) && uvpos.x >= effective_left && uvpos.x <= effective_right) {
         float edge_dist = dist_from_top;
         float edge_pos = uvpos.x;
         float burn_velocity = calc_burn_velocity(edge_pos, t + 5.0, wave_fade);
@@ -684,7 +684,7 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
     }
 
     // === LEFT EDGE ===
-    if ((burn_side == 2 || burn_side == 4) && uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
+    if ((burn_side == 2 || burn_side == 4 || burn_side == 6) && uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
         float edge_dist = dist_from_left;
         float edge_pos = uvpos.y;
         float burn_velocity = calc_burn_velocity(edge_pos, t + 10.0, wave_fade);
@@ -768,7 +768,7 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
     }
 
     // === RIGHT EDGE ===
-    if ((burn_side == 3 || burn_side == 4) && uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
+    if ((burn_side == 3 || burn_side == 4 || burn_side == 6) && uvpos.y >= effective_bottom && uvpos.y <= effective_top) {
         float edge_dist = dist_from_right;
         float edge_pos = uvpos.y;
         float burn_velocity = calc_burn_velocity(edge_pos, t + 15.0, wave_fade);
