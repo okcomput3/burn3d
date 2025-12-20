@@ -131,6 +131,18 @@ float turbulence(vec2 p, float t) {
     return turb;
 }
 
+// IMPROVED: Curl noise for swirling vortex motion
+// From lecture: "using fluid dynamics... to create effects such as swirling and vortices"
+float curl_noise(vec2 p, float t) {
+    float eps = 0.01;
+    float n1 = smooth_noise2D(p + vec2(eps, 0.0) + vec2(0.0, t * 0.3));
+    float n2 = smooth_noise2D(p - vec2(eps, 0.0) + vec2(0.0, t * 0.3));
+    float n3 = smooth_noise2D(p + vec2(0.0, eps) + vec2(0.0, t * 0.3));
+    float n4 = smooth_noise2D(p - vec2(0.0, eps) + vec2(0.0, t * 0.3));
+    // Curl is perpendicular to gradient - creates rotational motion
+    return (n3 - n4) - (n1 - n2);
+}
+
 // Crack pattern for burning paper edges
 // Paper develops cracks and splits as it burns
 float crack_pattern(vec2 uv, float seed) {
@@ -212,6 +224,34 @@ vec3 apply_flame_hue(vec3 base_color) {
     return hsv2rgb(vec3(flame_hsv.x, base_hsv.y, base_hsv.z));
 }
 
+// IMPROVED: Temperature-based color with proper blackbody radiation approximation
+// From lecture: "The colouring successfully fools the eye... Yellow represents the hottest, cooling to red"
+vec3 temperature_to_color(float temp) {
+    // temp: 0.0 = cool (dark), 1.0 = hottest (white-yellow)
+    // Based on blackbody radiation: hot -> white/blue, cooling -> yellow -> orange -> red -> dark
+    vec3 color;
+    if (temp > 0.9) {
+        // Hottest: white with slight blue tinge (oxygen-rich combustion)
+        color = mix(vec3(1.0, 0.95, 0.8), vec3(0.9, 0.95, 1.0), (temp - 0.9) * 10.0);
+    } else if (temp > 0.7) {
+        // Very hot: bright yellow-white
+        color = mix(vec3(1.0, 0.85, 0.3), vec3(1.0, 0.95, 0.8), (temp - 0.7) * 5.0);
+    } else if (temp > 0.5) {
+        // Hot: yellow-orange
+        color = mix(vec3(1.0, 0.5, 0.1), vec3(1.0, 0.85, 0.3), (temp - 0.5) * 5.0);
+    } else if (temp > 0.3) {
+        // Medium: orange-red
+        color = mix(vec3(0.8, 0.2, 0.05), vec3(1.0, 0.5, 0.1), (temp - 0.3) * 5.0);
+    } else if (temp > 0.1) {
+        // Cool: dark red
+        color = mix(vec3(0.3, 0.05, 0.02), vec3(0.8, 0.2, 0.05), (temp - 0.1) * 5.0);
+    } else {
+        // Coolest: ember glow to black
+        color = mix(vec3(0.0), vec3(0.3, 0.05, 0.02), temp * 10.0);
+    }
+    return apply_flame_hue(color);
+}
+
 // Velocity heat color with blue core support
 vec3 velocity_heat_color(vec3 base_color, float velocity, float proximity) {
     float heat = smoothstep(0.0, 0.4, velocity);
@@ -229,15 +269,30 @@ vec3 velocity_heat_color(vec3 base_color, float velocity, float proximity) {
     return mix(base_color, heat_color, boosted_proximity);
 }
 
-// Calculate rising ash particles for a given edge
-// From lecture: burning gases are lighter than air and tend to rise
+// IMPROVED: Rising ash with viscous drag and buoyancy
+// From lecture: "Burning gases are lighter than air and so tend to rise"
+// Also: "f = ma + sv" where s is viscous drag coefficient
 float calc_rising_ash(vec2 uv, float edge_start, float edge_end, float burn_edge, float t, float inv_aspect, bool is_vertical) {
     float ash_particles = 0.0;
-    for (float i = 0.0; i < 6.0; i += 1.0) {
-        float spawn_pos = hash1(i + floor(t * 0.2) * 7.0 + burn_edge * 100.0) * (edge_end - edge_start) + edge_start;
-        float life = fract(t * 0.12 + i * 0.167);
-        float rise_height = life * 0.18;
-        float drift = sin(life * 6.28318 + i * 2.0) * 0.025 * life;
+    for (float i = 0.0; i < 8.0; i += 1.0) {
+        float spawn_pos = hash1(i + floor(t * 0.15) * 7.0 + burn_edge * 100.0) * (edge_end - edge_start) + edge_start;
+        float life = fract(t * 0.1 + i * 0.125);
+        
+        // IMPROVED: Buoyancy with viscous drag (terminal velocity behavior)
+        // From lecture: damping creates f = ma + sv, leading to terminal velocity
+        float drag_coeff = 3.0;
+        float buoyancy = 0.25;
+        // Velocity approaches terminal velocity: v_terminal = buoyancy / drag
+        // Position integrates to: x = v_terminal * t - (v_terminal/drag) * (1 - e^(-drag*t))
+        float effective_time = life * 2.0;
+        float rise_height = (buoyancy / drag_coeff) * effective_time * (1.0 - exp(-drag_coeff * effective_time * 0.5));
+        
+        // Horizontal drift from curl noise (swirling motion)
+        float curl = curl_noise(vec2(spawn_pos * 5.0, life * 3.0), t);
+        float drift = curl * 0.04 * life;
+        
+        // Add some random wobble
+        drift += sin(life * 8.0 + i * 2.5) * 0.02 * life;
         
         float px, py;
         if (is_vertical) {
@@ -248,38 +303,93 @@ float calc_rising_ash(vec2 uv, float edge_start, float edge_end, float burn_edge
             py = burn_edge + rise_height;
         }
         
-        float ash_size = 0.012 * (1.0 - life * 0.6);
+        // Ash size decreases as it cools and breaks apart
+        float ash_size = 0.014 * (1.0 - life * 0.7);
         float ash_dist = length(vec2((uv.x - px) * inv_aspect, uv.y - py));
-        float ash_alpha = smoothstep(ash_size, 0.0, ash_dist) * (1.0 - life) * (0.6 + 0.4 * sin(t * 5.0 + i * 3.0));
+        
+        // Flickering glow that fades as ember cools
+        float glow_flicker = 0.5 + 0.5 * sin(t * 6.0 + i * 4.0) * (1.0 - life);
+        float ash_alpha = smoothstep(ash_size, 0.0, ash_dist) * (1.0 - life * life) * glow_flicker;
         
         ash_particles += ash_alpha;
     }
-    return ash_particles * 0.5;
+    return ash_particles * 0.6;
 }
 
-// Calculate smoke wisps above burn edge
-// From lecture: fire creates smoke that rises and spreads
+// IMPROVED: Smoke wisps with proper diffusion behavior
+// From lecture: "Gases diffuse from more dense regions to less dense ones and cool"
 float calc_smoke_wisps(vec2 uv, float dist_from_burn, float t, float progress_fade) {
     float smoke_dist = dist_from_burn - 0.015;
-    if (smoke_dist > 0.0 && smoke_dist < 0.25) {
-        float smoke_density = smoothstep(0.25, 0.0, smoke_dist);
+    if (smoke_dist > 0.0 && smoke_dist < 0.35) {
+        // Density decreases with distance (diffusion)
+        float smoke_density = smoothstep(0.35, 0.0, smoke_dist);
+        smoke_density *= smoke_density; // Quadratic falloff for more realistic diffusion
+        
+        // IMPROVED: Curl noise for swirling smoke motion
+        float curl = curl_noise(uv * 8.0, t * 0.3);
+        vec2 smoke_uv = uv + vec2(curl * 0.02, -smoke_dist * 0.5);
         
         // Wispy noise pattern - multiple octaves for detail
-        float smoke_noise = smooth_noise2D(vec2(uv.x * 25.0, uv.y * 18.0 - t * 0.4));
-        smoke_noise *= smooth_noise2D(vec2(uv.x * 45.0 + t * 0.25, uv.y * 30.0 - t * 0.3));
-        smoke_noise += smooth_noise2D(vec2(uv.x * 80.0 - t * 0.15, uv.y * 60.0 - t * 0.5)) * 0.5;
+        float smoke_noise = smooth_noise2D(vec2(smoke_uv.x * 20.0, smoke_uv.y * 15.0 - t * 0.5));
+        smoke_noise *= smooth_noise2D(vec2(smoke_uv.x * 40.0 + t * 0.2, smoke_uv.y * 25.0 - t * 0.4));
+        smoke_noise += smooth_noise2D(vec2(smoke_uv.x * 70.0 - t * 0.1, smoke_uv.y * 50.0 - t * 0.6)) * 0.5;
         
-        float smoke_alpha = smoke_density * smoke_noise * 0.35;
+        // Smoke rises and spreads (diffusion)
+        float rise_factor = 1.0 + smoke_dist * 2.0;
+        smoke_noise *= rise_factor;
+        
+        float smoke_alpha = smoke_density * smoke_noise * 0.4;
         smoke_alpha *= progress_fade;
         
-        return clamp(smoke_alpha, 0.0, 0.6);
+        return clamp(smoke_alpha, 0.0, 0.7);
     }
     return 0.0;
 }
 
+// IMPROVED: Sparks that follow parabolic paths with drag
+// From lecture: "Simple equations determine the path of each particle"
+// Using f = ma + sv (Newtonian with viscous drag)
+vec3 calc_spark_particle(vec2 uv, float spawn_x, float spawn_y, float t, float seed, float inv_aspect) {
+    float life = fract(t * 0.15 + seed * 0.1);
+    
+    // Initial velocity (randomized ejection)
+    float angle = hash1(seed * 17.3) * 3.14159 * 0.5 + 0.25; // Upward bias
+    float speed = 0.3 + hash1(seed * 23.7) * 0.2;
+    vec2 v0 = vec2(cos(angle), sin(angle)) * speed;
+    
+    // Physics: position with drag and gravity
+    // From lecture: vt+1 = at*dt + vt, with damping f = ma + sv
+    float drag = 2.5;
+    float gravity = -0.15;
+    float effective_t = life * 1.5;
+    
+    // Approximate solution with drag: x = v0/drag * (1 - e^(-drag*t)) + 0.5*g*t^2 (simplified)
+    float exp_term = 1.0 - exp(-drag * effective_t);
+    vec2 pos = vec2(
+        spawn_x + v0.x / drag * exp_term,
+        spawn_y + v0.y / drag * exp_term + 0.5 * gravity * effective_t * effective_t
+    );
+    
+    // Spark size and brightness decrease with life (cooling)
+    float spark_size = 0.008 * (1.0 - life * 0.8);
+    float spark_dist = length(vec2((uv.x - pos.x) * inv_aspect, uv.y - pos.y));
+    
+    float spark_alpha = smoothstep(spark_size, 0.0, spark_dist);
+    
+    // Temperature decreases with life
+    float temp = 1.0 - life * 0.7;
+    vec3 spark_color = temperature_to_color(temp);
+    
+    // Flickering
+    spark_alpha *= 0.7 + 0.3 * sin(t * 15.0 + seed * 10.0);
+    spark_alpha *= (1.0 - life * life); // Fade out
+    
+    return spark_color * spark_alpha;
+}
+
 void main()
 {
-    int burn_side = 2;
+    int burn_side = 0;
     float width = size.x;
     float height = size.y;
 
@@ -452,14 +562,17 @@ float fiber = paper_fiber(uvpos, t);
     
     total_distort *= distort_fade;
     
-    // === IMPROVED HEAT SHIMMER - Rising effect ===
+    // === IMPROVED HEAT SHIMMER - Rising effect with curl noise ===
     // From lecture: burning gases rise due to being lighter than air
     float heat_zone = smoothstep(0.12, 0.0, dist_from_burn) * smoothstep(-0.02, 0.02, dist_from_burn);
     heat_zone *= distort_fade;
     
-    // Standard shimmer
+    // IMPROVED: Curl noise for swirling heat distortion
+    float curl = curl_noise(uvpos * 12.0, t * 0.5);
+    
+    // Standard shimmer with curl-based swirl
     total_distort += vec2(
-        sin(uvpos.y * 50.0 + t * 8.0) * heat_zone * 0.008,
+        sin(uvpos.y * 50.0 + t * 8.0) * heat_zone * 0.008 + curl * heat_zone * 0.006,
         cos(uvpos.x * 45.0 + t * 7.0) * heat_zone * 0.008
     );
     
@@ -497,12 +610,18 @@ float fiber = paper_fiber(uvpos, t);
         vec3 scorched_tint = vec3(0.95, 0.85, 0.7);
         bg.rgb *= mix(vec3(1.0), scorched_tint, heat_discolor * 0.4);
         
-        // === SECONDARY ILLUMINATION (Radiosity-lite) ===
-        // From lecture: fire emits light and illuminates surrounding objects
-        float illumination_zone = smoothstep(0.30, 0.0, dist_from_burn);
-        float flicker_illum = 0.8 + 0.2 * sin(t * 12.0 + uvpos.x * 20.0) * sin(t * 9.0 + uvpos.y * 15.0);
-        flicker_illum *= 0.9 + 0.1 * sin(t * 17.0 + uvpos.x * 35.0);
-        vec3 fire_light = apply_flame_hue(vec3(1.0, 0.55, 0.15)) * illumination_zone * 0.18 * flicker_illum;
+        // === IMPROVED SECONDARY ILLUMINATION (Radiosity-lite) ===
+        // From lecture: "fire creates the effect of making the flame illuminate the surrounding objects"
+        float illumination_zone = smoothstep(0.35, 0.0, dist_from_burn);
+        
+        // IMPROVED: More complex flickering based on turbulence
+        float flame_turb_illum = turbulence(uvpos * 10.0, t * 0.8);
+        float flicker_illum = 0.7 + 0.3 * flame_turb_illum;
+        flicker_illum *= 0.85 + 0.15 * sin(t * 17.0 + uvpos.x * 35.0);
+        
+        // Illumination color varies with distance (hotter closer)
+        float illum_temp = 0.8 - dist_from_burn * 3.0;
+        vec3 fire_light = temperature_to_color(clamp(illum_temp, 0.3, 0.9)) * illumination_zone * 0.22 * flicker_illum;
         fire_light *= distort_fade;
         // Don't illuminate heavily shadowed areas as much
         bg.rgb += fire_light * (1.0 - shadow_intensity * 0.5);
@@ -554,7 +673,14 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float edge_proximity = smoothstep(0.08, 0.0, abs_adj);
         
-        // Orange ember particles
+        // IMPROVED: Sparks with proper physics
+        vec3 spark_total = vec3(0.0);
+        for (float i = 0.0; i < 200.0; i += 1.0) {
+            float spawn_x = smooth_hash1(i + floor(t * 0.3) * 7.0) * (effective_right - effective_left) + effective_left;
+            spark_total += calc_spark_particle(uvpos, spawn_x, effective_bottom, t, i + 100.0, inv_aspect);
+        }
+        
+        // Orange ember particles (original style, kept for density)
         float ember_particle = 0.0;
         for (float i = 0.0; i < 3.0; i += 1.0) {
             float px = smooth_hash1(i + t * 0.5) * (effective_right - effective_left) + effective_left;
@@ -575,22 +701,28 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         // Rising ash particles
         float ash_particles = calc_rising_ash(uvpos, effective_left, effective_right, effective_bottom, t, inv_aspect, false);
         
-        // Base colors with flame_color hue applied
-        vec3 base_outer = apply_flame_hue(vec3(0.8, 0.2, 0.0));
-        vec3 base_inner = apply_flame_hue(vec3(1.0, 0.6, 0.1));
-        vec3 base_core = apply_flame_hue(vec3(1.0, 0.95, 0.7));
+        // IMPROVED: Use temperature-based colors for more realistic heat distribution
+        // From lecture: "Yellow represents the hottest, cooling to red through the particle life time"
+        float core_temp = 0.95 - abs_adj * 8.0;
+        float inner_temp = 0.75 - abs_adj * 5.0;
+        float outer_temp = 0.5 - abs_adj * 3.0;
+        
+        vec3 core_color = temperature_to_color(clamp(core_temp, 0.0, 1.0));
+        vec3 inner_color = temperature_to_color(clamp(inner_temp, 0.0, 1.0));
+        vec3 outer_color = temperature_to_color(clamp(outer_temp, 0.0, 1.0));
+        
         vec3 base_ember = apply_flame_hue(vec3(1.0, 0.5, 0.0));
         vec3 base_red_ember = apply_flame_hue(vec3(1.0, 0.1, 0.0));
-        vec3 ash_color = vec3(0.12, 0.10, 0.08);
+        vec3 ash_color = vec3(0.15, 0.12, 0.10);
         
         // Blue flame at hottest core (oxygen-rich combustion)
         vec3 blue_flame = apply_flame_hue(vec3(0.3, 0.5, 1.0));
         float blue_core = smoothstep(0.006 * burn_size, 0.0, abs_adj) * 
                           smoothstep(-0.002 * burn_size, 0.002 * burn_size, adjusted_dist);
         
-        vec3 hot_outer = velocity_heat_color(base_outer, burn_velocity, edge_proximity);
-        vec3 hot_inner = velocity_heat_color(base_inner, burn_velocity, edge_proximity);
-        vec3 hot_core = velocity_heat_color(base_core, burn_velocity * 1.5, edge_proximity);
+        vec3 hot_outer = velocity_heat_color(outer_color, burn_velocity, edge_proximity);
+        vec3 hot_inner = velocity_heat_color(inner_color, burn_velocity, edge_proximity);
+        vec3 hot_core = velocity_heat_color(core_color, burn_velocity * 1.5, edge_proximity);
         
         vec3 burn_line = hot_outer * outer_glow 
                        + hot_inner * inner_glow 
@@ -598,7 +730,8 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
                        + blue_flame * blue_core * 0.35
                        + base_ember * ember_particle
                        + base_red_ember * red_ember_particle
-                       + ash_color * ash_particles;
+                       + ash_color * ash_particles
+                       + spark_total;
         
         // Charred edge with crack pattern
         float char_zone = smoothstep(0.005, -0.03, edge_dist);
@@ -610,6 +743,7 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, max(ember_particle * 0.8, max(red_ember_particle * 0.9, ash_particles * 0.5))));
         burn_alpha = max(burn_alpha, blue_core * 0.4);
+        burn_alpha = max(burn_alpha, length(spark_total) * 0.8);
         burn_alpha *= (0.9 + 0.2 * sin(t * 20.0 + edge_pos * 50.0) * sin(t * 17.0));
         burn_alpha *= progress_fade * edge_fade;
         
@@ -644,6 +778,13 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs_adj) * smoothstep(-0.02 * burn_size, 0.02 * burn_size, adjusted_dist) * (0.9 + 0.1 * flame_turb);
         float edge_proximity = smoothstep(0.08, 0.0, abs_adj);
         
+        // Sparks
+        vec3 spark_total = vec3(0.0);
+        for (float i = 0.0; i < 5.0; i += 1.0) {
+            float spawn_x = smooth_hash1(i + floor(t * 0.3) * 11.0 + 50.0) * (effective_right - effective_left) + effective_left;
+            spark_total += calc_spark_particle(uvpos, spawn_x, effective_top, t, i + 200.0, inv_aspect);
+        }
+        
         float ember_particle = 0.0;
         for (float i = 0.0; i < 3.0; i += 1.0) {
             float px = smooth_hash1(i + t * 0.5 + 10.0) * (effective_right - effective_left) + effective_left;
@@ -662,32 +803,41 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         // For top edge, ash falls/drifts rather than rises
         float ash_particles = 0.0;
-        for (float i = 0.0; i < 5.0; i += 1.0) {
-            float spawn_x = hash1(i + floor(t * 0.25) * 11.0) * (effective_right - effective_left) + effective_left;
-            float life = fract(t * 0.1 + i * 0.2);
-            float fall_dist = life * 0.12;
-            float drift = sin(life * 6.28318 + i * 1.5) * 0.02 * life;
+        for (float i = 0.0; i < 6.0; i += 1.0) {
+            float spawn_x = hash1(i + floor(t * 0.2) * 11.0) * (effective_right - effective_left) + effective_left;
+            float life = fract(t * 0.08 + i * 0.167);
+            // Fall with drag
+            float drag = 2.0;
+            float gravity = 0.2;
+            float fall_dist = gravity / drag * life * (1.0 - exp(-drag * life * 2.0));
+            float drift = curl_noise(vec2(spawn_x * 5.0, life * 3.0), t + 10.0) * 0.03 * life;
             float px = spawn_x + drift;
             float py = effective_top - fall_dist;
-            float ash_size = 0.01 * (1.0 - life * 0.5);
+            float ash_size = 0.012 * (1.0 - life * 0.6);
             float ash_dist = length(vec2((uvpos.x - px) * inv_aspect, uvpos.y - py));
-            ash_particles += smoothstep(ash_size, 0.0, ash_dist) * (1.0 - life) * 0.4;
+            ash_particles += smoothstep(ash_size, 0.0, ash_dist) * (1.0 - life * life) * 0.5;
         }
         
-        vec3 base_outer = apply_flame_hue(vec3(0.8, 0.2, 0.0));
-        vec3 base_inner = apply_flame_hue(vec3(1.0, 0.6, 0.1));
-        vec3 base_core = apply_flame_hue(vec3(1.0, 0.95, 0.7));
+        // Temperature-based colors
+        float core_temp = 0.95 - abs_adj * 8.0;
+        float inner_temp = 0.75 - abs_adj * 5.0;
+        float outer_temp = 0.5 - abs_adj * 3.0;
+        
+        vec3 core_color = temperature_to_color(clamp(core_temp, 0.0, 1.0));
+        vec3 inner_color = temperature_to_color(clamp(inner_temp, 0.0, 1.0));
+        vec3 outer_color = temperature_to_color(clamp(outer_temp, 0.0, 1.0));
+        
         vec3 base_ember = apply_flame_hue(vec3(1.0, 0.5, 0.0));
         vec3 base_red_ember = apply_flame_hue(vec3(1.0, 0.1, 0.0));
-        vec3 ash_color = vec3(0.12, 0.10, 0.08);
+        vec3 ash_color = vec3(0.15, 0.12, 0.10);
         vec3 blue_flame = apply_flame_hue(vec3(0.3, 0.5, 1.0));
         
         float blue_core = smoothstep(0.006 * burn_size, 0.0, abs_adj) * 
                           smoothstep(-0.002 * burn_size, 0.002 * burn_size, adjusted_dist);
         
-        vec3 hot_outer = velocity_heat_color(base_outer, burn_velocity, edge_proximity);
-        vec3 hot_inner = velocity_heat_color(base_inner, burn_velocity, edge_proximity);
-        vec3 hot_core = velocity_heat_color(base_core, burn_velocity * 1.5, edge_proximity);
+        vec3 hot_outer = velocity_heat_color(outer_color, burn_velocity, edge_proximity);
+        vec3 hot_inner = velocity_heat_color(inner_color, burn_velocity, edge_proximity);
+        vec3 hot_core = velocity_heat_color(core_color, burn_velocity * 1.5, edge_proximity);
         
         vec3 burn_line = hot_outer * outer_glow 
                        + hot_inner * inner_glow 
@@ -695,7 +845,8 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
                        + blue_flame * blue_core * 0.35
                        + base_ember * ember_particle
                        + base_red_ember * red_ember_particle
-                       + ash_color * ash_particles;
+                       + ash_color * ash_particles
+                       + spark_total;
         
         float char_zone = smoothstep(0.005, -0.03, edge_dist);
         float char_texture = fiber * 0.4 + 0.6;
@@ -706,6 +857,7 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, max(ember_particle * 0.8, max(red_ember_particle * 0.9, ash_particles * 0.5))));
         burn_alpha = max(burn_alpha, blue_core * 0.4);
+        burn_alpha = max(burn_alpha, length(spark_total) * 0.8);
         burn_alpha *= (0.9 + 0.2 * sin(t * 20.0 + edge_pos * 50.0 + 3.0) * sin(t * 17.0));
         burn_alpha *= progress_fade * edge_fade;
         
@@ -740,6 +892,13 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs_adj) * smoothstep(-0.02 * burn_size, 0.02 * burn_size, adjusted_dist) * (0.9 + 0.1 * flame_turb);
         float edge_proximity = smoothstep(0.08, 0.0, abs_adj);
         
+        // Sparks
+        vec3 spark_total = vec3(0.0);
+        for (float i = 0.0; i < 5.0; i += 1.0) {
+            float spawn_y = smooth_hash1(i + floor(t * 0.3) * 13.0 + 100.0) * (effective_top - effective_bottom) + effective_bottom;
+            spark_total += calc_spark_particle(uvpos, effective_left, spawn_y, t, i + 300.0, inv_aspect);
+        }
+        
         float ember_particle = 0.0;
         for (float i = 0.0; i < 3.0; i += 1.0) {
             float py = smooth_hash1(i + t * 0.5 + 20.0) * (effective_top - effective_bottom) + effective_bottom;
@@ -758,20 +917,26 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float ash_particles = calc_rising_ash(uvpos, effective_bottom, effective_top, effective_left, t + 20.0, inv_aspect, true);
         
-        vec3 base_outer = apply_flame_hue(vec3(0.8, 0.2, 0.0));
-        vec3 base_inner = apply_flame_hue(vec3(1.0, 0.6, 0.1));
-        vec3 base_core = apply_flame_hue(vec3(1.0, 0.95, 0.7));
+        // Temperature-based colors
+        float core_temp = 0.95 - abs_adj * 8.0;
+        float inner_temp = 0.75 - abs_adj * 5.0;
+        float outer_temp = 0.5 - abs_adj * 3.0;
+        
+        vec3 core_color = temperature_to_color(clamp(core_temp, 0.0, 1.0));
+        vec3 inner_color = temperature_to_color(clamp(inner_temp, 0.0, 1.0));
+        vec3 outer_color = temperature_to_color(clamp(outer_temp, 0.0, 1.0));
+        
         vec3 base_ember = apply_flame_hue(vec3(1.0, 0.5, 0.0));
         vec3 base_red_ember = apply_flame_hue(vec3(1.0, 0.1, 0.0));
-        vec3 ash_color = vec3(0.12, 0.10, 0.08);
+        vec3 ash_color = vec3(0.15, 0.12, 0.10);
         vec3 blue_flame = apply_flame_hue(vec3(0.3, 0.5, 1.0));
         
         float blue_core = smoothstep(0.006 * burn_size, 0.0, abs_adj) * 
                           smoothstep(-0.002 * burn_size, 0.002 * burn_size, adjusted_dist);
         
-        vec3 hot_outer = velocity_heat_color(base_outer, burn_velocity, edge_proximity);
-        vec3 hot_inner = velocity_heat_color(base_inner, burn_velocity, edge_proximity);
-        vec3 hot_core = velocity_heat_color(base_core, burn_velocity * 1.5, edge_proximity);
+        vec3 hot_outer = velocity_heat_color(outer_color, burn_velocity, edge_proximity);
+        vec3 hot_inner = velocity_heat_color(inner_color, burn_velocity, edge_proximity);
+        vec3 hot_core = velocity_heat_color(core_color, burn_velocity * 1.5, edge_proximity);
         
         vec3 burn_line = hot_outer * outer_glow 
                        + hot_inner * inner_glow 
@@ -779,7 +944,8 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
                        + blue_flame * blue_core * 0.35
                        + base_ember * ember_particle
                        + base_red_ember * red_ember_particle
-                       + ash_color * ash_particles;
+                       + ash_color * ash_particles
+                       + spark_total;
         
         float char_zone = smoothstep(0.005, -0.03, edge_dist);
         float char_texture = fiber * 0.4 + 0.6;
@@ -790,6 +956,7 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, max(ember_particle * 0.8, max(red_ember_particle * 0.9, ash_particles * 0.5))));
         burn_alpha = max(burn_alpha, blue_core * 0.4);
+        burn_alpha = max(burn_alpha, length(spark_total) * 0.8);
         burn_alpha *= (0.9 + 0.2 * sin(t * 20.0 + edge_pos * 50.0 + 6.0) * sin(t * 17.0));
         burn_alpha *= progress_fade * edge_fade;
         
@@ -824,6 +991,13 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         float outer_glow = smoothstep(0.05 * burn_size, 0.0, abs_adj) * smoothstep(-0.02 * burn_size, 0.02 * burn_size, adjusted_dist) * (0.9 + 0.1 * flame_turb);
         float edge_proximity = smoothstep(0.08, 0.0, abs_adj);
         
+        // Sparks
+        vec3 spark_total = vec3(0.0);
+        for (float i = 0.0; i < 5.0; i += 1.0) {
+            float spawn_y = smooth_hash1(i + floor(t * 0.3) * 17.0 + 150.0) * (effective_top - effective_bottom) + effective_bottom;
+            spark_total += calc_spark_particle(uvpos, effective_right, spawn_y, t, i + 400.0, inv_aspect);
+        }
+        
         float ember_particle = 0.0;
         for (float i = 0.0; i < 3.0; i += 1.0) {
             float py = smooth_hash1(i + t * 0.5 + 30.0) * (effective_top - effective_bottom) + effective_bottom;
@@ -842,20 +1016,26 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float ash_particles = calc_rising_ash(uvpos, effective_bottom, effective_top, effective_right, t + 30.0, inv_aspect, true);
         
-        vec3 base_outer = apply_flame_hue(vec3(0.8, 0.2, 0.0));
-        vec3 base_inner = apply_flame_hue(vec3(1.0, 0.6, 0.1));
-        vec3 base_core = apply_flame_hue(vec3(1.0, 0.95, 0.7));
+        // Temperature-based colors
+        float core_temp = 0.95 - abs_adj * 8.0;
+        float inner_temp = 0.75 - abs_adj * 5.0;
+        float outer_temp = 0.5 - abs_adj * 3.0;
+        
+        vec3 core_color = temperature_to_color(clamp(core_temp, 0.0, 1.0));
+        vec3 inner_color = temperature_to_color(clamp(inner_temp, 0.0, 1.0));
+        vec3 outer_color = temperature_to_color(clamp(outer_temp, 0.0, 1.0));
+        
         vec3 base_ember = apply_flame_hue(vec3(1.0, 0.5, 0.0));
         vec3 base_red_ember = apply_flame_hue(vec3(1.0, 0.1, 0.0));
-        vec3 ash_color = vec3(0.12, 0.10, 0.08);
+        vec3 ash_color = vec3(0.15, 0.12, 0.10);
         vec3 blue_flame = apply_flame_hue(vec3(0.3, 0.5, 1.0));
         
         float blue_core = smoothstep(0.006 * burn_size, 0.0, abs_adj) * 
                           smoothstep(-0.002 * burn_size, 0.002 * burn_size, adjusted_dist);
         
-        vec3 hot_outer = velocity_heat_color(base_outer, burn_velocity, edge_proximity);
-        vec3 hot_inner = velocity_heat_color(base_inner, burn_velocity, edge_proximity);
-        vec3 hot_core = velocity_heat_color(base_core, burn_velocity * 1.5, edge_proximity);
+        vec3 hot_outer = velocity_heat_color(outer_color, burn_velocity, edge_proximity);
+        vec3 hot_inner = velocity_heat_color(inner_color, burn_velocity, edge_proximity);
+        vec3 hot_core = velocity_heat_color(core_color, burn_velocity * 1.5, edge_proximity);
         
         vec3 burn_line = hot_outer * outer_glow 
                        + hot_inner * inner_glow 
@@ -863,7 +1043,8 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
                        + blue_flame * blue_core * 0.35
                        + base_ember * ember_particle
                        + base_red_ember * red_ember_particle
-                       + ash_color * ash_particles;
+                       + ash_color * ash_particles
+                       + spark_total;
         
         float char_zone = smoothstep(0.005, -0.03, edge_dist);
         float char_texture = fiber * 0.4 + 0.6;
@@ -874,6 +1055,7 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
         
         float burn_alpha = max(max(outer_glow, inner_glow), max(ember_core, max(ember_particle * 0.8, max(red_ember_particle * 0.9, ash_particles * 0.5))));
         burn_alpha = max(burn_alpha, blue_core * 0.4);
+        burn_alpha = max(burn_alpha, length(spark_total) * 0.8);
         burn_alpha *= (0.9 + 0.2 * sin(t * 20.0 + edge_pos * 50.0 + 9.0) * sin(t * 17.0));
         burn_alpha *= progress_fade * edge_fade;
         
@@ -883,8 +1065,8 @@ float edge_noise = smooth_hash(edge_pos * width * 0.5, t * 2.0) * 0.01 * wave_fa
     
     result.rgb += burn_line_total * (1.0 - end_blur * 0.7);
     
-    // === SMOKE WISPS ===
-    // From lecture: fire creates smoke that rises
+    // === IMPROVED SMOKE WISPS with diffusion ===
+    // From lecture: fire creates smoke that rises and diffuses
     float smoke_alpha = calc_smoke_wisps(uvpos, dist_from_burn, t, distort_fade);
     vec3 smoke_color = vec3(0.18, 0.15, 0.12);
     // Smoke is more visible against the burned (transparent) area
