@@ -247,7 +247,6 @@ void main()
 */
 
 
-
 static const char *burn_frag_source =
     R"(
 #version 100
@@ -286,6 +285,8 @@ float dist_to_radial(float theta, float num_radials, float r) {
 
 // Spider web with build animation
 // build_progress: 0 = nothing, 1 = complete web
+// Spider web with build animation
+// build_progress: 0 = nothing, 1 = complete web
 float spider_web(vec2 uv, vec2 center, float num_radials, float num_spirals, float build_progress, float time) {
     vec2 polar = to_polar(uv, center);
     float r = polar.x;
@@ -303,17 +304,32 @@ float spider_web(vec2 uv, vec2 center, float num_radials, float num_spirals, flo
     
     // === RADIAL SPOKES ===
     // Grow outward from center based on radial_progress
+// === RADIAL SPOKES ===
+    // Grow outward from center based on radial_progress
     float radial_max_r = radial_progress * 0.95;
     
-    // Add slight stagger - different radials grow at slightly different speeds
+    // Radials appear one at a time
     float radial_index = floor(mod(theta, TAU) / (TAU / num_radials));
+    float radial_order = mod(radial_index * 7.0, num_radials); // Shuffle order using prime
+    float radial_start_time = radial_order / num_radials;
+    float this_radial_progress = smoothstep(radial_start_time, radial_start_time + 0.15, radial_progress);
+    
+    // Add slight stagger - different radials grow at slightly different speeds
     float radial_stagger = sin(radial_index * 1.7) * 0.05;
-    float this_radial_max = radial_max_r + radial_stagger * radial_progress;
+    float this_radial_max = this_radial_progress * 0.95 + radial_stagger * this_radial_progress;
+    
+    // Random broken radial - 5% chance per radial
+    float radial_seed = fract(sin(radial_index * 127.1) * 43758.5453);
+    float radial_broken = step(0.95, radial_seed);
+    float radial_break_point = fract(sin(radial_index * 311.7) * 18732.1) * 0.5 + 0.3;
     
     float radial_dist = dist_to_radial(theta, num_radials, r);
     float radials = 1.0 - smoothstep(0.0, thread, radial_dist);
     radials *= step(0.015, r); // Start from hub
     radials *= 1.0 - smoothstep(this_radial_max - 0.02, this_radial_max, r); // Growing edge
+    
+    // Apply broken radial - cut thread at break point
+    radials *= 1.0 - radial_broken * step(radial_break_point, r) * (1.0 - step(radial_break_point + 0.15, r));
     
     // Bright tip at growing end
     float radial_tip = smoothstep(this_radial_max - 0.06, this_radial_max - 0.01, r);
@@ -322,61 +338,45 @@ float spider_web(vec2 uv, vec2 center, float num_radials, float num_spirals, flo
     
     web = max(web, radials);
     
-    // === SPIRAL WITH CATENARY SAG ===
-    float spiral_start = 0.04;
-    float spiral_end = 0.92;
-    float spiral_spacing = (spiral_end - spiral_start) / num_spirals;
+// === SPIRAL SILK - continuous curved connections ===
+    float indent = 0.005;
+    float mask_size = 0.85;
     
-    float sector = TAU / num_radials;
-    float sector_pos = mod(theta, sector) / sector;
-    float sag = catenary_sag(sector_pos);
+    float ang = num_radials * atan(uv.y - center.y, uv.x - center.x);
+    float spiral_col = sin(r) + (r + 0.1) * abs(sin(ang * 0.5) * indent);
+    float spiral_mask = step(spiral_col, PI * mask_size);
     
-    // Spiral builds outward - only show rings up to current progress
-    float max_spiral_r = spiral_start + spiral_progress * (spiral_end - spiral_start);
+    // Build animation - spiral expands outward
+    float max_visible_r = spiral_progress * mask_size * 1.2;
     
-    // Also animate along theta - spiral is being "drawn"
-    float spiral_theta_progress = spiral_progress * TAU * 3.0; // Multiple rotations
+    // Single spiral thread
+    float spiral_pattern = fract(spiral_col * num_spirals + ang * 0.0095);
     
-    for (int i = 0; i < 60; i++) {
-        if (float(i) >= num_spirals) break;
-        
-        float base_r = spiral_start + float(i) * spiral_spacing;
-        
-        // Only show this ring if we've built that far
-        if (base_r > max_spiral_r) break;
-        
-        // For partially complete rings, fade based on angle
-        float ring_completion = (max_spiral_r - base_r) / spiral_spacing;
-        ring_completion = clamp(ring_completion, 0.0, 1.0);
-        
-        // Spiral draws around - check if this angle is "drawn" yet
-        float draw_angle = ring_completion * TAU;
-        float angle_in_ring = mod(theta, TAU);
-        float angle_visible = smoothstep(draw_angle - 0.3, draw_angle, angle_in_ring);
-        angle_visible = 1.0 - angle_visible; // Invert - visible if angle < draw_angle
-        if (ring_completion >= 0.99) angle_visible = 1.0; // Full ring
-        
-        float sag_amount = base_r * sector * 0.4;
-        float sagged_r = base_r - sag * sag_amount;
-        
-        float d = abs(r - sagged_r);
-        float spiral_thread = 1.0 - smoothstep(0.0, thread * 0.85, d);
-        spiral_thread *= angle_visible;
-        
-        // Bright dot at the drawing point
-        float is_drawing_ring = step(0.01, ring_completion) * (1.0 - step(0.99, ring_completion));
-        float at_draw_point = smoothstep(0.4, 0.0, abs(angle_in_ring - draw_angle));
-        float drawing_dot = at_draw_point * is_drawing_ring * (1.0 - smoothstep(0.0, thread * 4.0, d));
-        
-        web = max(web, spiral_thread);
-        web = max(web, drawing_dot * 1.5);
-    }
+    // Random broken segments - 5% chance
+    float segment_index = floor(spiral_col * num_spirals);
+    float sector_index = floor(mod(ang, TAU) / (TAU / num_radials));
+    float spiral_seed = fract(sin(segment_index * 93.7 + sector_index * 45.3) * 28461.2);
+    float spiral_broken = step(0.95, spiral_seed);
     
-    // === HUB (center) - appears first ===
-    float hub_progress = smoothstep(0.0, 0.1, build_progress);
-    float hub = 1.0 - smoothstep(0.012, 0.022, r);
-    hub *= hub_progress;
-    web = max(web, hub * 0.9);
+    // Single thread line
+    float spiral_thread = smoothstep(0.94, 0.97, spiral_pattern) - smoothstep(0.97, 1.0, spiral_pattern);
+    
+    // Apply broken segments
+    spiral_thread *= 1.0 - spiral_broken;
+    spiral_thread *= spiral_mask;
+    spiral_thread *= step(r, max_visible_r);
+    
+    // Bright glow at the drawing edge
+    float edge_dist = abs(r - max_visible_r);
+    float drawing_glow = 1.0 - smoothstep(0.0, 0.04, edge_dist);
+    drawing_glow *= spiral_thread;
+    drawing_glow *= step(0.15, build_progress);
+    drawing_glow *= 1.0 - step(0.95, spiral_progress);
+    
+    web = max(web, spiral_thread);
+    web = max(web, drawing_glow * 1.5);
+    
+
     
     // === ANCHOR THREADS - appear with radials ===
     float anchor_angles[5];
@@ -440,15 +440,28 @@ void main()
     // direction == 1 (closing): reverse - full web to nothing
     float build_progress;
     float t;
+    float fade_out;
     
     if (direction == 0) {
-        // OPENING: Web builds up
-        build_progress = progress;
+        // OPENING: Web builds up, then fades out after completion
+        // progress 0.0 - 0.7: build the web (build_progress 0 -> 1)
+        // progress 0.7 - 0.85: hold at full (brief pause)
+        // progress 0.85 - 1.0: fade out
+        build_progress = smoothstep(0.0, 0.4, progress);
         t = progress * flame_speed * 2.0;
+        
+        // Fade out after build completes
+        fade_out = 1.0 - smoothstep(0.85, 1.0, progress);
     } else {
-        // CLOSING: Web dissolves/unbuilds
-        build_progress = 1.0 - progress;
+        // CLOSING: Web builds up, then fades out after completion
+        // progress 0.0 - 0.7: build the web (build_progress 0 -> 1)
+        // progress 0.7 - 0.85: hold at full (brief pause)
+        // progress 0.85 - 1.0: fade out
+        build_progress = smoothstep(0.0, 0.4, progress);
         t = progress * flame_speed * 2.0;
+        
+        // Fade out after build completes
+        fade_out = 1.0 - smoothstep(0.85, 1.0, progress);
     }
     
     // Coordinate transform
@@ -457,19 +470,47 @@ void main()
     uv = uv - 0.5;
     uv.x *= aspect;
     
-    vec2 web_center = vec2(0.0, 0.0);
+//    vec2 web_center = vec2(0.0, 0.0);
+     vec2 web_center = vec2(-0.18 * aspect, 0.1);
     
     // Web parameters
     float num_radials = 28.0 + flame_width * 0.2;
-    float num_spirals = 50.0 + flame_height * 0.5;
+    float num_spirals = 25.0 + flame_height * 0.25;
     
-    float web = spider_web(uv, web_center, num_radials, num_spirals, build_progress, t);
+    // Wind displacement using calculus - sine wave with derivative for velocity
+    float wind_time = t * 1.5;
     
-    // Visibility based on build progress
-    float effect_blend = smoothstep(0.0, 0.05, build_progress);
+    // Base wind function: f(t) = sin(t) + 0.5*sin(2.3t)
+    // Derivative f'(t) = cos(t) + 1.15*cos(2.3t) gives velocity for motion blur feel
+    float wind_phase = sin(wind_time) + 0.5 * sin(wind_time * 2.3);
+    float wind_velocity = cos(wind_time) + 1.15 * cos(wind_time * 2.3);
+    
+    // Displacement varies with distance from center (more sway at edges)
+    // Using r^2 for quadratic falloff from center (integral of 2r)
+    float r_from_center = length(uv - web_center);
+    float displacement_strength = r_from_center * r_from_center * 0.15;
+    
+    // Apply wind - horizontal displacement modulated by vertical position
+    // Second derivative: f''(t) = -sin(t) - 2.645*sin(2.3t) for acceleration sway
+    float wind_accel = -sin(wind_time) - 2.645 * sin(wind_time * 2.3);
+    
+    vec2 wind_offset;
+    wind_offset.x = wind_phase * displacement_strength;
+    wind_offset.y = wind_velocity * displacement_strength * 0.3 + wind_accel * displacement_strength * 0.1;
+    
+    // Damped harmonic motion for natural decay: e^(-kt) * sin(wt)
+    float damping = exp(-r_from_center * 0.5);
+    wind_offset *= damping;
+    
+    vec2 displaced_uv = uv - wind_offset;
+    
+    float web = spider_web(displaced_uv, web_center, num_radials, num_spirals, build_progress, t);
+    
+    // Visibility based on build progress and fade out
+    float effect_blend = smoothstep(0.0, 0.05, build_progress) * fade_out;
     
     // WHITE silk colors
-    vec3 silk_color = vec3(0.92, 0.94, 0.98);
+    vec3 silk_color = vec3(0.82, 0.84, 0.88);
     vec3 glow_color = vec3(1.0);
     
     // Composition
@@ -490,8 +531,8 @@ void main()
     result.a = tex.a;
     result.a = max(result.a, thread_vis * 0.6);
     
-    result.rgb *= soft_edge;
-    result.a *= soft_edge;
+    result.rgb = mix(tex.rgb, result.rgb, soft_edge);
+    result.a = mix(tex.a, result.a, soft_edge);
     
     gl_FragColor = clamp(result, 0.0, 1.0);
 }
