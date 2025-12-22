@@ -149,13 +149,10 @@ void main()
     float effect_progress;
     float t;
     
-    if (direction == 0) {
-        effect_progress = 1.0 - progress;
-        t = progress * flame_speed * 0.1;
-    } else {
+ 
         effect_progress = progress;
         t = progress * flame_speed * 0.1;
-    }
+    
     
     vec2 uv = uvpos;
     uv.x *= size.x / size.y;
@@ -168,7 +165,7 @@ void main()
     
     // DYNAMIC THRESHOLD based on effect_progress
     float threshold_min = -1.0;
-    float threshold_max = 1.0;
+    float threshold_max = 4.0;
     float dissolve_threshold = mix(threshold_min, threshold_max * (1.0 - progress), effect_progress);
     
     // Calculate mask
