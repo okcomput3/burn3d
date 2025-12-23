@@ -44,6 +44,177 @@ void main() {
 }
 )";
 
+
+static const char *burn_frag_source =
+    R"(
+#version 100
+@builtin_ext@
+@builtin@
+precision highp float;
+
+varying highp vec2 uvpos;
+uniform vec2 size;
+uniform float progress;
+uniform int direction;
+uniform float flame_speed;
+uniform float flame_width;
+uniform float flame_height;
+uniform vec4 flame_color;
+
+// ============================================
+// DALÍ MELTING CLOCK
+// Extreme multiple draping folds
+// ============================================
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main()
+{
+    float aspect = size.x / size.y;
+    vec2 p = (uvpos - 0.5);
+    p.x *= aspect;
+    
+    float t = clamp(progress, 0.0, 1.0);
+    float t2 = t * t;
+    
+    // Zoom out massively
+    float zoom = 1.0 + t * 30.0;
+    vec2 zoomed_p = p * zoom;
+    
+    // Extreme warp strength
+    float strength = t2 * (40.0 + flame_speed * 0.04);
+    
+    vec2 warped = zoomed_p;
+    
+    float total_droop = 0.0;
+    float total_bulge = 0.0;
+    
+    // 40 horizontal folds
+    for (int i = 0; i < 40; i++) {
+        float fi = float(i);
+        float fold_y = -2.0 + fi * 0.2 + hash(vec2(fi, 0.0)) * 0.15;
+        fold_y *= zoom;
+        
+        float fold_strength = 0.4 + hash(vec2(fi, 1.0)) * 0.6;
+        float fold_zone = (zoomed_p.y - fold_y) * 3.0;
+        float fold = 1.0 / (1.0 + exp(-fold_zone * 4.0));
+        
+        float droop = fold * strength * 0.15 * fold_strength;
+        total_droop += droop;
+        
+        float bulge = fold * (1.0 - fold) * 4.0;
+        total_bulge += bulge * fold_strength;
+    }
+    
+    // 30 vertical smudges
+    for (int i = 0; i < 30; i++) {
+        float fi = float(i);
+        float fold_x = -2.0 + fi * 0.2 + hash(vec2(fi, 2.0)) * 0.15;
+        fold_x *= zoom * aspect;
+        
+        float fold_strength = 0.3 + hash(vec2(fi, 3.0)) * 0.4;
+        float fold_zone = (zoomed_p.x - fold_x) * 2.5;
+        float fold = 1.0 / (1.0 + exp(-fold_zone * 3.5));
+        
+        float smear = fold * (1.0 - fold) * 4.0;
+        warped.x += smear * strength * 0.12 * fold_strength * sign(zoomed_p.x - fold_x);
+        
+        total_bulge += smear * fold_strength * 0.4;
+    }
+    
+    // 20 diagonal warps
+    for (int i = 0; i < 20; i++) {
+        float fi = float(i);
+        float diag_pos = -1.5 + fi * 0.2 + hash(vec2(fi, 4.0)) * 0.1;
+        diag_pos *= zoom;
+        
+        float fold_strength = 0.3 + hash(vec2(fi, 5.0)) * 0.4;
+        float diag = zoomed_p.x / aspect + zoomed_p.y;
+        float fold_zone = (diag - diag_pos) * 2.0;
+        float fold = 1.0 / (1.0 + exp(-fold_zone * 3.0));
+        
+        float warp_amt = fold * (1.0 - fold) * 4.0 * fold_strength;
+        warped.x += warp_amt * strength * 0.08;
+        warped.y -= warp_amt * strength * 0.08;
+        
+        total_bulge += warp_amt * 0.3;
+    }
+    
+    warped.y -= total_droop;
+    warped.x *= 1.0 + total_bulge * strength * 0.01;
+    
+    // Backward tilt
+    float top_zone = smoothstep(-1.0 * zoom, 1.0 * zoom, zoomed_p.y);
+    warped.y += (1.0 - top_zone) * strength * 0.15;
+    
+    // Lighting gradient
+    float h = 0.02;
+    float droop_dy = 0.0;
+    
+    for (int i = 0; i < 10; i++) {
+        float fi = float(i);
+        float fold_y = (-2.0 + fi * 0.5 + hash(vec2(fi, 0.0)) * 0.15) * zoom;
+        float fold_strength = 0.4 + hash(vec2(fi, 1.0)) * 0.6;
+        
+        float fold_here = 1.0 / (1.0 + exp(-((zoomed_p.y - fold_y) * 3.0) * 4.0));
+        float fold_next = 1.0 / (1.0 + exp(-(((zoomed_p.y + h) - fold_y) * 3.0) * 4.0));
+        
+        droop_dy += (fold_next - fold_here) * strength * 0.15 * fold_strength;
+    }
+    
+    vec3 normal = normalize(vec3(0.0, -droop_dy * 3.0, 1.0));
+    
+    vec3 light_dir = normalize(vec3(0.3, 0.6, 0.7));
+    float diffuse = max(0.0, dot(normal, light_dir));
+    
+    vec3 view_dir = vec3(0.0, 0.0, 1.0);
+    vec3 half_vec = normalize(light_dir + view_dir);
+    float specular = pow(max(0.0, dot(normal, half_vec)), 15.0);
+    
+    vec2 tex_uv = warped;
+    tex_uv.x /= aspect;
+    tex_uv += 0.5;
+    
+    float in_bounds = step(0.0, tex_uv.x) * step(tex_uv.x, 1.0) * 
+                      step(0.0, tex_uv.y) * step(tex_uv.y, 1.0);
+    
+    if (in_bounds < 0.5) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+        return;
+    }
+    
+    // Sample the texture
+    vec4 tex_color = get_pixel(tex_uv);
+    float src_alpha = tex_color.a;
+    
+    // Early out for fully transparent pixels
+    if (src_alpha < 0.001) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+        return;
+    }
+    
+    // Unpremultiply if needed (in case alpha is premultiplied)
+    vec3 color = src_alpha > 0.001 ? tex_color.rgb / src_alpha : vec3(0.0);
+    
+    float ambient = 0.65;
+    float light_strength = min(strength * 0.2, 1.0);
+    
+    vec3 lit_color = color * (ambient + diffuse * (1.0 - ambient) * light_strength);
+    lit_color += vec3(1.0, 0.99, 0.96) * specular * light_strength * 0.4 * min(total_bulge * 0.1, 1.0);
+    
+    float shadow = min(total_droop * 0.05, 0.35);
+    lit_color *= 1.0 - shadow;
+    
+    // Final alpha preserves source alpha with fadeout
+    float final_alpha = src_alpha * (1.0 - smoothstep(0.94, 1.0, t));
+    
+    // Premultiply back for output
+    gl_FragColor = vec4(lit_color * final_alpha, final_alpha);
+}
+)";
+/*
 static const char *burn_frag_source =
     R"(
 #version 100
@@ -200,7 +371,7 @@ void main()
     gl_FragColor = vec4(lit_color, alpha);
 }
 )";
-
+*/
 namespace wf
 {
 namespace burn
