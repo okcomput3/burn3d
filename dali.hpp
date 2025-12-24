@@ -189,28 +189,26 @@ void main()
     vec4 tex_color = get_pixel(tex_uv);
     float src_alpha = tex_color.a;
     
-    // Early out for fully transparent pixels
     if (src_alpha < 0.001) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
     }
     
-    // Unpremultiply if needed (in case alpha is premultiplied)
-    vec3 color = src_alpha > 0.001 ? tex_color.rgb / src_alpha : vec3(0.0);
+    // Unpremultiply
+    vec3 color = tex_color.rgb / src_alpha;
     
-    float ambient = 0.65;
-    float light_strength = min(strength * 0.2, 1.0);
+    // Subtle lighting - mostly preserves original brightness
+    float light_amount = t * 0.15; // very subtle, increases with progress
     
-    vec3 lit_color = color * (ambient + diffuse * (1.0 - ambient) * light_strength);
-    lit_color += vec3(1.0, 0.99, 0.96) * specular * light_strength * 0.4 * min(total_bulge * 0.1, 1.0);
+    float lighting = 1.0 + (diffuse - 0.5) * light_amount;
+    lighting += specular * light_amount * 0.3 * min(total_bulge * 0.1, 1.0);
     
-    float shadow = min(total_droop * 0.05, 0.35);
-    lit_color *= 1.0 - shadow;
+    vec3 lit_color = color * lighting;
     
-    // Final alpha preserves source alpha with fadeout
+    // Final alpha
     float final_alpha = src_alpha * (1.0 - smoothstep(0.94, 1.0, t));
     
-    // Premultiply back for output
+    // Premultiply for output
     gl_FragColor = vec4(lit_color * final_alpha, final_alpha);
 }
 )";
